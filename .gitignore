@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pytest_cache/
+.pytest_cache/
+.python-version
+venv/
+.env
+.env.*
+*.env
+
+# Poetry
+poetry.lock
+
+# Virtual environment
+.venv/
+
+# Distribution / packaging
+.build/
+dist/
+*.egg-info/
+*.egg
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs and runtime files
+*.log
+tmp/
+*.pid
+*.sock
+
+# IDE files
+*.iml
+
+# OS files
+.DS_Store
+
+# Optional: ignore local secrets and service files
+secrets.yml
+credentials.json
