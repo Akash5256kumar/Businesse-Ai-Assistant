@@ -1,0 +1,140 @@
+1fb519769e252e26cb2b7a3603e61ec102db33ff
+---
+1fb5197 Remove .env from tracking and ignore it
+2a8c8dd update
+e4a4947 first commit
+---
+2a8c8dd update
+ .DS_Store                                          |  Bin 0 -> 6148 bytes
+ .claude/.DS_Store                                  |  Bin 0 -> 6148 bytes
+ .claude/agents/kfc/spec-design.md                  |  158 +
+ .claude/agents/kfc/spec-impl.md                    |   39 +
+ .claude/agents/kfc/spec-judge.md                   |  125 +
+ .claude/agents/kfc/spec-requirements.md            |  123 +
+ .claude/agents/kfc/spec-system-prompt-loader.md    |   38 +
+ .claude/agents/kfc/spec-tasks.md                   |  183 ++
+ .claude/agents/kfc/spec-test.md                    |  108 +
+ .claude/settings/kfc-settings.json                 |   24 +
+ .claude/system-prompts/spec-workflow-starter.md    |  306 ++
+ .env                                               |   46 +
+ .env.example                                       |    8 +
+ .python-version                                    |    1 +
+ Dockerfile                                         |    0
+ FRONTEND_INTEGRATION_PROMPT.md                     |  163 +
+ alembic.ini                                        |  149 +
+ alembic/.DS_Store                                  |  Bin 0 -> 6148 bytes
+ alembic/README                                     |    1 +
+ alembic/__pycache__/env.cpython-311.pyc            |  Bin 0 -> 4173 bytes
+ alembic/__pycache__/env.cpython-314.pyc            |  Bin 0 -> 3994 bytes
+ alembic/env.py                                     |   68 +
+ alembic/script.py.mako                             |   28 +
+ ...ad91_make_user_fields_nullable_for_otp_login.py |   45 +
+ ...f9d8b7a1c_create_users_and_businesses_tables.py |   90 +
+ ...r_fields_nullable_for_otp_login.cpython-311.pyc |  Bin 0 -> 2100 bytes
+ ...ate_users_and_businesses_tables.cpython-311.pyc |  Bin 0 -> 5567 bytes
+ ...mount_is_credit_to_transactions.cpython-311.pyc |  Bin 0 -> 2393 bytes
+ ...sers_and_location_to_businesses.cpython-311.pyc |  Bin 0 -> 1891 bytes
+ ...c4d7e8f9a2b1_create_chat_tables.cpython-311.pyc |  Bin 0 -> 6671 bytes
+ ...e7a92b44_create_otp_codes_table.cpython-311.pyc |  Bin 0 -> 3944 bytes
+ ...ems_pending_amount_is_credit_to_transactions.py |   33 +
+ ...ser_type_to_users_and_location_to_businesses.py |   37 +
+ .../versions/c4d7e8f9a2b1_create_chat_tables.py    |   85 +
+ .../f1c3e7a92b44_create_otp_codes_table.py         |   58 +
+ app/.DS_Store                                      |  Bin 0 -> 6148 bytes
+ app/__init__.py                                    |    0
+ app/__pycache__/__init__.cpython-311.pyc           |  Bin 0 -> 146 bytes
+ app/__pycache__/__init__.cpython-314.pyc           |  Bin 0 -> 172 bytes
+ app/__pycache__/main.cpython-311.pyc               |  Bin 0 -> 2533 bytes
+ app/api/__init__.py                                |    0
+ app/api/__pycache__/__init__.cpython-311.pyc       |  Bin 0 -> 150 bytes
+ app/api/v1/__init__.py                             |    0
+ app/api/v1/__pycache__/__init__.cpython-311.pyc    |  Bin 0 -> 153 bytes
+ app/api/v1/__pycache__/auth.cpython-311.pyc        |  Bin 0 -> 1660 bytes
+ app/api/v1/__pycache__/chat.cpython-311.pyc        |  Bin 0 -> 1982 bytes
+ app/api/v1/__pycache__/customers.cpython-311.pyc   |  Bin 0 -> 2416 bytes
+ app/api/v1/__pycache__/home.cpython-311.pyc        |  Bin 0 -> 2760 bytes
+ app/api/v1/__pycache__/profile.cpython-311.pyc     |  Bin 0 -> 1511 bytes
+ app/api/v1/auth.py                                 |   31 +
+ app/api/v1/chat.py                                 |   30 +
+ app/api/v1/customers.py                            |   40 +
+ app/api/v1/home.py                                 |   52 +
+ app/api/v1/profile.py                              |   25 +
+ app/core/__init__.py                               |    0
+ app/core/__pycache__/__init__.cpython-311.pyc      |  Bin 0 -> 151 bytes
+ app/core/__pycache__/__init__.cpython-314.pyc      |  Bin 0 -> 177 bytes
+ app/core/__pycache__/auth.cpython-311.pyc          |  Bin 0 -> 1936 bytes
+ app/core/__pycache__/config.cpython-311.pyc        |  Bin 0 -> 2523 bytes
+ app/core/__pycache__/config.cpython-314.pyc        |  Bin 0 -> 2845 bytes
+ app/core/__pycache__/database.cpython-311.pyc      |  Bin 0 -> 2032 bytes
+ app/core/__pycache__/deep.cpython-311.pyc          |  Bin 0 -> 1891 bytes
+ app/core/__pycache__/redis.cpython-311.pyc         |  Bin 0 -> 1109 bytes
+ app/core/auth.py                                   |   39 +
+ app/core/config.py                                 |   69 +
+ app/core/database.py                               |   43 +
+ app/core/deep.py                                   |   35 +
+ app/core/redis.py                                  |   23 +
+ app/main.py                                        |   57 +
+ app/models/__init__.py                             |   17 +
+ app/models/__pycache__/__init__.cpython-311.pyc    |  Bin 0 -> 702 bytes
+ app/models/__pycache__/business.cpython-311.pyc    |  Bin 0 -> 2226 bytes
+ app/models/__pycache__/customer.cpython-311.pyc    |  Bin 0 -> 2474 bytes
+ app/models/__pycache__/message_log.cpython-311.pyc |  Bin 0 -> 1935 bytes
+ app/models/__pycache__/mixins.cpython-311.pyc      |  Bin 0 -> 1131 bytes
+ app/models/__pycache__/otp_code.cpython-311.pyc    |  Bin 0 -> 2160 bytes
+ app/models/__pycache__/transaction.cpython-311.pyc |  Bin 0 -> 2712 bytes
+ app/models/__pycache__/user.cpython-311.pyc        |  Bin 0 -> 2335 bytes
+ app/models/business.py                             |   24 +
+ app/models/customer.py                             |   26 +
+ app/models/message_log.py                          |   24 +
+ app/models/mixins.py                               |   15 +
+ app/models/otp_code.py                             |   25 +
+ app/models/transaction.py                          |   29 +
+ app/models/user.py                                 |   27 +
+ app/schemas/__init__.py                            |    0
+ app/schemas/__pycache__/__init__.cpython-311.pyc   |  Bin 0 -> 154 bytes
+ app/schemas/__pycache__/auth.cpython-311.pyc       |  Bin 0 -> 5532 bytes
+ app/schemas/__pycache__/chat.cpython-311.pyc       |  Bin 0 -> 5074 bytes
+ app/schemas/__pycache__/customers.cpython-311.pyc  |  Bin 0 -> 2092 bytes
+ app/schemas/__pycache__/home.cpython-311.pyc       |  Bin 0 -> 4207 bytes
+ app/schemas/auth.py                                |   98 +
+ app/schemas/chat.py                                |   89 +
+ app/schemas/customers.py                           |   37 +
+ app/schemas/home.py                                |   74 +
+ app/services/__init__.py                           |    0
+ app/services/__pycache__/__init__.cpython-311.pyc  |  Bin 0 -> 155 bytes
+ .../__pycache__/ai_service.cpython-311.pyc         |  Bin 0 -> 18733 bytes
+ .../__pycache__/auth_service.cpython-311.pyc       |  Bin 0 -> 7913 bytes
+ .../__pycache__/chat_service.cpython-311.pyc       |  Bin 0 -> 16373 bytes
+ .../__pycache__/customer_service.cpython-311.pyc   |  Bin 0 -> 4444 bytes
+ .../customers_list_service.cpython-311.pyc         |  Bin 0 -> 4847 bytes
+ .../__pycache__/home_service.cpython-311.pyc       |  Bin 0 -> 15163 bytes
+ .../__pycache__/jwt_service.cpython-311.pyc        |  Bin 0 -> 1215 bytes
+ .../__pycache__/otp_service.cpython-311.pyc        |  Bin 0 -> 3728 bytes
+ .../__pycache__/profile_service.cpython-311.pyc    |  Bin 0 -> 4491 bytes
+ .../transaction_service.cpython-311.pyc            |  Bin 0 -> 2901 bytes
+ app/services/ai_service.py                         |  483 +++
+ app/services/auth_service.py                       |  162 +
+ app/services/chat_service.py                       |  371 +++
+ app/services/customer_service.py                   |   67 +
+ app/services/customers_list_service.py             |   98 +
+ app/services/home_service.py                       |  287 ++
+ app/services/jwt_service.py                        |   20 +
+ app/services/otp_service.py                        |   47 +
+ app/services/profile_service.py                    |  100 +
+ app/services/transaction_service.py                |   95 +
+ app/tasks/__init__.py                              |    0
+ app/tasks/__pycache__/__init__.cpython-311.pyc     |  Bin 0 -> 154 bytes
+ docker-compose.yml                                 |   26 +
+ poetry.lock                                        | 3167 ++++++++++++++++++++
+ pyproject.toml                                     |   50 +
+ src/apna_dukan/__init__.py                         |    0
+ test_ai_manual.py                                  |  182 ++
+ tests/__init__.py                                  |    0
+ tests/__pycache__/__init__.cpython-311.pyc         |  Bin 0 -> 193 bytes
+ .../conftest.cpython-311-pytest-9.0.3.pyc          |  Bin 0 -> 1241 bytes
+ .../test_chat.cpython-311-pytest-9.0.3.pyc         |  Bin 0 -> 5760 bytes
+ .../test_profile.cpython-311-pytest-9.0.3.pyc      |  Bin 0 -> 35756 bytes
+ tests/conftest.py                                  |   15 +
+ tests/test_chat.py                                 |  103 +
+ tests/test_profile.py                              |  375 +++
+ 132 files changed, 8493 insertions(+)
