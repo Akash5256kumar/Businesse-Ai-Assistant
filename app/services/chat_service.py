@@ -16,7 +16,7 @@ from app.schemas.chat import (
 from app.services import ai_service, customer_service, transaction_service
 
 _VALID_TYPES = {"sale", "payment", "purchase", "expense", "query"}
-_HISTORY_LIMIT = 3
+_HISTORY_LIMIT = 5
 
 
 def _sale_reply(customer_name: str, amount: Decimal, pending: Decimal, is_credit: bool) -> str:
@@ -314,6 +314,9 @@ async def confirm_customer(
             db, user_id, customer, amount, pending_amount, is_credit, raw_items, note
         )
         msg = _sale_reply(customer.name, amount, pending_amount, is_credit)
+        confirmed_log = {"transactions": [], "confidence": "high", "clarification_needed": None}
+        phone_part = f" ({customer.phone})" if customer.phone else ""
+        await _log(db, user_id, f"[Confirmed: {customer.name}{phone_part}]", confirmed_log, msg)
         return ChatResponse(
             reply=msg,
             transactions=[TransactionDetail(
@@ -337,6 +340,9 @@ async def confirm_customer(
             f"✅ Payment received\n💰 ₹{amount:,.0f}\n👤 {customer.name}"
             f"\n⏳ Remaining: ₹{customer.pending:,.0f}"
         )
+        confirmed_log = {"transactions": [], "confidence": "high", "clarification_needed": None}
+        phone_part = f" ({customer.phone})" if customer.phone else ""
+        await _log(db, user_id, f"[Confirmed: {customer.name}{phone_part}]", confirmed_log, msg)
         return ChatResponse(
             reply=msg,
             transactions=[TransactionDetail(

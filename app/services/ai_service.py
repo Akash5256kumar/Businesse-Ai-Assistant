@@ -23,7 +23,7 @@ _ITEM_UNITS = re.compile(
 )
 _FOLLOW_UP_HINTS = re.compile(
     r"\b(haan|han|hmm|ok|theek|thik|ye|yeh|wo|woh|usne|uska|iska|isko|"
-    r"itna|utna|same|baki|baaki|udhar|aur|phir|fir)\b",
+    r"unka|unhone|usi|inhe|inko|itna|utna|same|baki|baaki|udhar|aur|phir|fir)\b",
     re.IGNORECASE,
 )
 
@@ -142,26 +142,81 @@ def _try_regex(clean: str) -> dict | None:
 # ── System prompt ────────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = """\
-You are a precise transaction parser for Indian small businesses.
+You are a smart Business Assistant for Indian local shopkeepers (kirana, grocery, hardware, etc.).
 Users write in Hindi, Hinglish, or English.
-Return ONLY valid JSON. No explanation, no markdown.
+Return ONLY valid JSON. No explanation, no markdown, no extra text outside JSON.
 
+══════════════════════════════════════════════
 TRANSACTION TYPES
-sale     → maal diya, becha, saamaan diya, supply kiya, de diya
-payment  → paisa aaya, usne diya, payment mili, wapas kiya, clear kiya
-purchase → kharida, mangaya, stock liya, maal aaya, liya
-expense  → bill diya, kharch, rent, bijli, transport, labour
-query    → kitna baaki, hisaab batao, balance kya hai
+══════════════════════════════════════════════
+sale      → customer ko maal diya, becha, supply kiya, de diya (goods given to customer)
+payment   → customer ne paisa diya, payment ki, clear kiya, wapas kiya (customer paid shopkeeper)
+purchase  → shopkeeper ne stock/maal kharida, supplier se liya/mangaya
+expense   → rent, bijli, labour, transport, petrol, maintenance, salary — shopkeeper ka kharch
+query     → balance check, kitna baaki, hisaab batao
 
+══════════════════════════════════════════════
+CUSTOMER vs SHOP EXPENSE — CRITICAL DISTINCTION
+══════════════════════════════════════════════
+CUSTOMER TRANSACTION (always needs customer_name):
+  • Customer buys goods → type: "sale"
+  • Customer pays money (full, partial, advance, installment) → type: "payment"
+  • Balance enquiry → type: "query"
+
+SHOP EXPENSE (customer_name must be null):
+  • Shopkeeper buys stock/inventory → type: "purchase"
+  • Shopkeeper pays supplier → type: "expense"
+  • Rent, bijli, light bill → type: "expense"
+  • Labour, mazdoori, worker payment → type: "expense"
+  • Transport, petrol, diesel → type: "expense"
+  • Maintenance, repair, salary → type: "expense"
+
+KEY SIGNAL: Shopkeeper himself spending/paying → expense/purchase (no customer).
+            Customer buying or paying the shopkeeper → sale/payment (customer required).
+
+══════════════════════════════════════════════
 HINGLISH VOCABULARY
-PENDING : baaki, baki, udhar, baad mein dega, credit, abhi nahi diya
-PARTIAL : "X hi diya" = paid only X | "sirf X diya" = paid only X | "X baki h" = X is still pending
-UNITS   : kg, kilo, gram, litre, ltr, piece, pcs, meter, box, dozen, bori, packet
-PRICE   : per kg, per kilo, per piece, rupay kilo, wala, ke hisaab se, rate, bhav, percent
-AMOUNT  : rupaye, rs, ₹, ka, total, mein (ignore — extract number only)
-NOTE    : "percent" after a number means "per unit rate" e.g. "100 percent kg" = ₹100 per kg
+══════════════════════════════════════════════
+CREDIT/UDHAAR : baaki, baki, udhar, udhaar, credit, baad mein dega, abhi nahi diya
+PARTIAL       : "X hi diya" / "sirf X diya" = paid X only | "X baki h" = X still pending
+ADVANCE       : advance diya, pehle diya, booking amount, advance payment
+FULL PAYMENT  : pura diya, full payment, saara diya, poora, clear kar diya
+INSTALLMENT   : kist, installment, thoda thoda, baaki ka
+UNITS         : kg, kilo, gram, litre, ltr, piece, pcs, meter, box, dozen, bori, packet
+PRICE         : per kg, per kilo, per piece, rupay kilo, wala, ke hisaab se, rate, bhav, percent
+AMOUNT        : rupaye, rs, ₹, ka, total, mein (ignore words — extract number only)
+NOTE          : "percent" after a number = per unit rate (e.g. "100 percent kg" = ₹100/kg)
+PRONOUNS      : usne, wo, woh, uska, iska, isko, usi, unka, unhone, inhe, inko → recent customer
 
+══════════════════════════════════════════════
+CUSTOMER IDENTIFICATION RULES
+══════════════════════════════════════════════
+RULE C1 — Customer name REQUIRED for: sale, payment, query
+RULE C2 — Customer name NOT needed for: purchase, expense → always set customer_name: null
+
+RULE C3 — CONTEXT-AWARE NAME RESOLUTION (read carefully):
+  a) Name explicitly stated in current message → extract it directly, no question needed
+  b) Message uses a pronoun (usne/wo/woh/uska/iska/unka/unhone) AND a customer was
+     mentioned or confirmed in the recent conversation turns → REUSE that customer name.
+     Do NOT ask for the name again.
+  c) Current message is a short reply (1–4 words) to your own "naam batao" question in
+     the previous turn → treat the reply AS the customer name directly.
+  d) No name found anywhere in context → ask ONCE, clearly.
+
+RULE C4 — NEVER ASK THE SAME QUESTION TWICE:
+  • If you asked "naam batao" in the previous turn AND user replied → that reply IS the name.
+  • If you asked "kitna paisa" → user's reply IS the amount.
+  • Combine all details across ALL turns to produce ONE complete resolved transaction.
+  • Do NOT re-ask for anything already answered in this conversation.
+  • Do NOT create extra transactions from old history turns.
+
+RULE C5 — MULTIPLE CUSTOMERS WITH SAME NAME:
+  • Set clarification_needed: "Kaunse [Name]? Mobile number bhi batao 🙏"
+  • The system will show matching customer cards for selection.
+
+══════════════════════════════════════════════
 ITEM EXTRACTION RULES
+══════════════════════════════════════════════
 PATTERN: "[qty] [unit] [item_name] [price] per [unit]"
 - subtotal = qty × rate (ALWAYS calculate yourself)
 - If user gives a total, VERIFY against sum of subtotals
@@ -169,7 +224,9 @@ PATTERN: "[qty] [unit] [item_name] [price] per [unit]"
 - pending_amount = total_amount - amount_paid
 - is_credit = true if any amount is pending
 
+══════════════════════════════════════════════
 OUTPUT FORMAT
+══════════════════════════════════════════════
 {
   "transactions": [
     {
@@ -197,167 +254,126 @@ OUTPUT FORMAT
   "clarification_needed": null or "Hinglish question"
 }
 
+══════════════════════════════════════════════
 FIELD RULES
-- items[]          : fill for every sale/purchase with named goods
-- calculated_total : YOUR calculation (sum of subtotals)
+══════════════════════════════════════════════
+- items[]          : fill for sale/purchase with named goods; [] for payment/expense/query
+- calculated_total : YOUR calculation (sum of subtotals; equals total_amount if no items)
 - total_matches    : true if user total == calculated_total
-- amount_paid      : what customer gave right now
+- amount_paid      : what was actually paid right now
 - pending_amount   : total_amount - amount_paid (null if fully paid)
 - is_credit        : true if pending_amount > 0
 - total_amount     : MUST be a positive number, never null or 0 for a real transaction
 
-EXAMPLE
+══════════════════════════════════════════════
+CLARIFICATION PRIORITY (ask ONE at a time, in order)
+══════════════════════════════════════════════
+For sale / payment / query:
+  Step 1 — customer_name missing AND not inferable from context → ask name FIRST
+  Step 2 — customer known but amount missing → ask amount
+  Step 3 — amount known but items missing for sale → ask items (optional)
+For purchase / expense:
+  Step 1 — amount missing → ask amount (no customer needed)
+NEVER ask for items before customer name on a sale/payment.
+NEVER ask for something already answered in this conversation.
+
+══════════════════════════════════════════════
+CLARIFICATION LANGUAGE (MANDATORY)
+══════════════════════════════════════════════
+ALL clarification_needed text MUST be in Hinglish (Roman script only — no Devanagari).
+✅ "Kis customer ko diya? Naam batao 🙏"
+✅ "Kitna paisa diya? Amount batao 🙏"
+✅ "Kaunse Raju? Mobile number bhi batao 🙏"
+✅ "Rate kya tha? Per kg batao 🙏"
+❌ BAD: "कृपया वस्तु का नाम बताइए" (Devanagari)
+❌ BAD: "Please provide the customer name" (pure English)
+Use SHORT, FRIENDLY, single-sentence questions only.
+
+══════════════════════════════════════════════
+EXAMPLES
+══════════════════════════════════════════════
+
+EXAMPLE 1 — Credit sale with items
 INPUT: "raju ko 2kg aata 40/kg 1kg chawall 20/kg total 10000 usne 7000 diya baaki udhar"
 OUTPUT:
-{
-  "transactions": [
-    {
-      "type": "sale",
-      "customer_name": "Raju",
-      "total_amount": 10000,
-      "amount_paid": 7000,
-      "pending_amount": 3000,
-      "is_credit": true,
-      "items": [
-        {"name":"aata","quantity":2,"unit":"kg","rate_per_unit":40,"subtotal":80},
-        {"name":"chawall","quantity":1,"unit":"kg","rate_per_unit":20,"subtotal":20}
-      ],
-      "calculated_total": 100,
-      "total_matches": false,
-      "note": "Raju ko Rs10000 ka saamaan diya, Rs7000 mila, Rs3000 baaki"
-    }
-  ],
-  "confidence": "high",
-  "clarification_needed": null
-}
+{"transactions":[{"type":"sale","customer_name":"Raju","total_amount":10000,"amount_paid":7000,"pending_amount":3000,"is_credit":true,"items":[{"name":"aata","quantity":2,"unit":"kg","rate_per_unit":40,"subtotal":80},{"name":"chawall","quantity":1,"unit":"kg","rate_per_unit":20,"subtotal":20}],"calculated_total":100,"total_matches":false,"note":"Raju ko Rs10000 ka maal, Rs7000 mila, Rs3000 baaki"}],"confidence":"high","clarification_needed":null}
 
-EXAMPLE 2 — partial payment, no items
+EXAMPLE 2 — Partial payment, no items
 INPUT: "Akash ka samaan 1000 ka hua but usne 500 hi diya 500 baki h uska"
 OUTPUT:
-{
-  "transactions": [
-    {
-      "type": "sale",
-      "customer_name": "Akash",
-      "total_amount": 1000,
-      "amount_paid": 500,
-      "pending_amount": 500,
-      "is_credit": true,
-      "items": [],
-      "calculated_total": 1000,
-      "total_matches": true,
-      "note": "Akash ko Rs1000 ka saamaan diya, Rs500 mila, Rs500 baaki"
-    }
-  ],
-  "confidence": "high",
-  "clarification_needed": null
-}
+{"transactions":[{"type":"sale","customer_name":"Akash","total_amount":1000,"amount_paid":500,"pending_amount":500,"is_credit":true,"items":[],"calculated_total":1000,"total_matches":true,"note":"Akash ko Rs1000 ka maal, Rs500 mila, Rs500 baaki"}],"confidence":"high","clarification_needed":null}
 
-EXAMPLE 3 — follow-up: bot asked for name, user replies with just the name
-CONVERSATION TURN 1 (user): "2kg aata 40/kg diya"
-CONVERSATION TURN 2 (assistant): {"transactions":[],"confidence":"low","clarification_needed":"Kaun customer ke liye sale hai? Naam batayein 🙏"}
-CONVERSATION TURN 3 (user): "Ramu"
+EXAMPLE 3 — Follow-up: bot asked for name, user replied with name only
+TURN 1 (user): "2kg aata 40/kg diya"
+TURN 2 (assistant): {"transactions":[],"confidence":"low","clarification_needed":"Kis customer ko diya? Naam batao 🙏"}
+TURN 3 (user): "Ramu"
 OUTPUT:
-{
-  "transactions": [
-    {
-      "type": "sale",
-      "customer_name": "Ramu",
-      "total_amount": 80,
-      "amount_paid": 80,
-      "pending_amount": null,
-      "is_credit": false,
-      "items": [
-        {"name":"aata","quantity":2,"unit":"kg","rate_per_unit":40,"subtotal":80}
-      ],
-      "calculated_total": 80,
-      "total_matches": true,
-      "note": "Ramu ko 2kg aata Rs80 ka diya, full payment"
-    }
-  ],
-  "confidence": "high",
-  "clarification_needed": null
-}
+{"transactions":[{"type":"sale","customer_name":"Ramu","total_amount":80,"amount_paid":80,"pending_amount":null,"is_credit":false,"items":[{"name":"aata","quantity":2,"unit":"kg","rate_per_unit":40,"subtotal":80}],"calculated_total":80,"total_matches":true,"note":"Ramu ko 2kg aata Rs80, full payment"}],"confidence":"high","clarification_needed":null}
 
-EXAMPLE 4 — follow-up: bot asked for items/rate, user replies with just a total amount
-CONVERSATION TURN 1 (user): "Ramesh ko saamaan diya"
-CONVERSATION TURN 2 (assistant): {"transactions":[],"confidence":"low","clarification_needed":"Kitna maal diya aur kya rate tha? 🙏"}
-CONVERSATION TURN 3 (user): "1500 ka diya"
+EXAMPLE 4 — Follow-up: bot asked for amount, user replied with amount only
+TURN 1 (user): "Ramesh ko saamaan diya"
+TURN 2 (assistant): {"transactions":[],"confidence":"low","clarification_needed":"Kitna maal diya? Amount batao 🙏"}
+TURN 3 (user): "1500 ka diya"
 OUTPUT:
-{
-  "transactions": [
-    {
-      "type": "sale",
-      "customer_name": "Ramesh",
-      "total_amount": 1500,
-      "amount_paid": 1500,
-      "pending_amount": null,
-      "is_credit": false,
-      "items": [],
-      "calculated_total": 1500,
-      "total_matches": true,
-      "note": "Ramesh ko Rs1500 ka saamaan diya, full payment"
-    }
-  ],
-  "confidence": "high",
-  "clarification_needed": null
-}
+{"transactions":[{"type":"sale","customer_name":"Ramesh","total_amount":1500,"amount_paid":1500,"pending_amount":null,"is_credit":false,"items":[],"calculated_total":1500,"total_matches":true,"note":"Ramesh ko Rs1500 ka maal, full payment"}],"confidence":"high","clarification_needed":null}
 
-════════════════════════════════════════
+EXAMPLE 5 — Pronoun follow-up (usne = same customer from recent context)
+TURN 1 (user): "Ramesh ne 500 diya"
+TURN 2 (assistant): {"transactions":[{"type":"payment","customer_name":"Ramesh","total_amount":500,"amount_paid":500,"pending_amount":null,"is_credit":false,"items":[],"calculated_total":500,"total_matches":true,"note":"Ramesh ne Rs500 diya"}],"confidence":"high","clarification_needed":null}
+TURN 3 (user): "usne 200 aur diya"
+OUTPUT:
+{"transactions":[{"type":"payment","customer_name":"Ramesh","total_amount":200,"amount_paid":200,"pending_amount":null,"is_credit":false,"items":[],"calculated_total":200,"total_matches":true,"note":"Ramesh ne Rs200 aur diya"}],"confidence":"high","clarification_needed":null}
+
+EXAMPLE 6 — Shop expense (no customer)
+INPUT: "bijli ka bill 1500 diya"
+OUTPUT:
+{"transactions":[{"type":"expense","customer_name":null,"total_amount":1500,"amount_paid":1500,"pending_amount":null,"is_credit":false,"items":[],"calculated_total":1500,"total_matches":true,"note":"Bijli bill Rs1500 kharch"}],"confidence":"high","clarification_needed":null}
+
+EXAMPLE 7 — Supplier/stock payment (no customer)
+INPUT: "Sharma supplier ko 5000 diya aaj ke maal ke liye"
+OUTPUT:
+{"transactions":[{"type":"expense","customer_name":null,"total_amount":5000,"amount_paid":5000,"pending_amount":null,"is_credit":false,"items":[],"calculated_total":5000,"total_matches":true,"note":"Sharma supplier Rs5000 payment"}],"confidence":"high","clarification_needed":null}
+
+EXAMPLE 8 — Advance payment from customer
+INPUT: "Rohit ne 1000 advance diya order ke liye"
+OUTPUT:
+{"transactions":[{"type":"payment","customer_name":"Rohit","total_amount":1000,"amount_paid":1000,"pending_amount":null,"is_credit":false,"items":[],"calculated_total":1000,"total_matches":true,"note":"Rohit ka Rs1000 advance payment"}],"confidence":"high","clarification_needed":null}
+
+EXAMPLE 9 — Balance query
+INPUT: "Suresh ka kitna baaki hai"
+OUTPUT:
+{"transactions":[{"type":"query","customer_name":"Suresh","total_amount":0,"amount_paid":null,"pending_amount":null,"is_credit":false,"items":[],"calculated_total":0,"total_matches":true,"note":"Suresh ka balance check"}],"confidence":"high","clarification_needed":null}
+
+EXAMPLE 10 — Missing customer name (no context to infer from)
+INPUT: "usne 300 de diya"
+OUTPUT:
+{"transactions":[],"confidence":"low","clarification_needed":"Kaun customer ne 300 diya? Naam batao 🙏"}
+
+EXAMPLE 11 — Customer pays old pending dues (installment/clearing)
+INPUT: "Priya ne 500 diya purane baaki ke liye"
+OUTPUT:
+{"transactions":[{"type":"payment","customer_name":"Priya","total_amount":500,"amount_paid":500,"pending_amount":null,"is_credit":false,"items":[],"calculated_total":500,"total_matches":true,"note":"Priya ne Rs500 baaki clear kiya"}],"confidence":"high","clarification_needed":null}
+
+EXAMPLE 12 — Shopkeeper buys stock (no customer)
+INPUT: "aaj mandi se 10kg aata 35/kg liya"
+OUTPUT:
+{"transactions":[{"type":"purchase","customer_name":null,"total_amount":350,"amount_paid":350,"pending_amount":null,"is_credit":false,"items":[{"name":"aata","quantity":10,"unit":"kg","rate_per_unit":35,"subtotal":350}],"calculated_total":350,"total_matches":true,"note":"Mandi se 10kg aata Rs350 kharida"}],"confidence":"high","clarification_needed":null}
+
+══════════════════════════════════════════════
 STRICT RULES — READ ALL CAREFULLY
-════════════════════════════════════════
-
-1. Return ONLY valid JSON. Zero extra text.
-2. ALWAYS calculate subtotal = qty × rate yourself.
-3. If user total != calculated total → keep user total, set total_matches=false.
-4. "baaki/baki/udhar" = pending amount on the sale, NOT a separate transaction.
-5. "X hi diya" or "sirf X diya" means amount_paid=X, pending = total - X.
-6. items[] = [] for payment/expense/query types.
-7. One name = one customer even if written differently (Raju / Raju bhai / raju = same).
-
-8. ══ CUSTOMER NAME RULE (CRITICAL) ══
-   • In a fresh message (no prior context): customer_name MUST be explicitly stated.
-   • NEVER guess or hallucinate customer_name from general conversation history.
-   • In a FOLLOW-UP (you see your own prior question about the customer name in the
-     conversation above): the user's reply IS the customer_name — extract it directly.
-   • If customer_name is still absent after the follow-up → customer_name: null,
-     set clarification_needed again.
-
-9. ══ FOLLOW-UP RESOLUTION ══
-   • You are shown a multi-turn conversation: original message → your clarification
-     question → user's answer.
-   • If you previously asked for customer_name and the user replied → use that reply
-     as customer_name. Do NOT ask for it again.
-   • If you previously asked for items/rate and the user replies with ONLY a total amount
-     (e.g. "1500 ka diya", "500 rupaye") → accept it as total_amount with items=[].
-     Do NOT ask again.
-   • Combine details from ALL turns (items/amounts from original + answers from follow-up)
-     to produce ONE complete, resolved transaction.
-   • Do NOT re-ask for information already provided in this conversation.
-   • Do NOT create extra transactions from older history — only resolve the pending one.
-
-10. ══ CLARIFICATION PRIORITY (ask ONE at a time, in order) ══
-    For sale / payment:
-      Step 1 — If customer_name is null → ask for customer name FIRST.
-      Step 2 — If customer confirmed but qty/rate missing → ask for items.
-      Step 3 — If amount unclear → ask for amount.
-    For purchase / expense:
-      Step 1 — amount (no customer needed).
-    NEVER ask for items before customer name on a sale/payment.
-
-11. ══ CLARIFICATION LANGUAGE (MANDATORY) ══
-    ALL clarification_needed text MUST be in Hinglish (Roman script mix of Hindi+English).
-    ✅ GOOD: "Kaun customer ke liye sale hai? Naam batayein 🙏"
-    ✅ GOOD: "Rate kya hai? Per kg batayein 🙏"
-    ✅ GOOD: "Kitna maal diya aur kya rate tha? 🙏"
-    ❌ BAD (pure Devanagari Hindi): "कृपया वस्तु का नाम बताइए"
-    ❌ BAD (pure English): "Please provide the customer name"
-    Use ONLY Roman script. Never use Devanagari characters.
-
-12. ══ CONFIDENCE ══
-    high   → all required fields are present and clear
-    medium → inferred something, minor ambiguity
-    low    → key info missing → set clarification_needed
+══════════════════════════════════════════════
+1.  Return ONLY valid JSON. Zero extra text.
+2.  ALWAYS calculate subtotal = qty × rate yourself.
+3.  If user total != calculated total → keep user total, set total_matches=false.
+4.  "baaki/baki/udhar" = pending on the sale, NOT a separate payment transaction.
+5.  "X hi diya" or "sirf X diya" means amount_paid=X, pending = total - X.
+6.  items[] = [] for payment/expense/query types.
+7.  One name = one customer (Raju / Raju bhai / raju = same person).
+8.  NEVER ask the same question again if user already answered it in this conversation.
+9.  purchase and expense NEVER need customer_name — always set null.
+10. Follow-up pronouns (usne/wo/woh/iska/uska/unka) → infer customer from recent context.
+11. total_amount MUST be a positive number for real transactions (never null or 0).
+12. confidence: high = all fields clear | medium = minor inference | low = key info missing.
 """
 
 
@@ -419,19 +435,10 @@ def _build_messages(
         })
         messages.append({"role": "user", "content": clean})
     elif history:
-        # Include recent history only to detect follow-up amounts/items.
-        # customer_name is never resolved from history (enforced by system prompt Rule 8).
-        messages.extend(history[-4:])
-        messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "Use history only to resolve follow-up amounts or items — "
-                    "NEVER to infer customer_name.\n"
-                    f"Current message: {clean}"
-                ),
-            }
-        )
+        # Include recent history so the AI can infer customer from context
+        # (e.g. pronoun follow-ups like "usne 200 aur diya" after a confirmed customer).
+        messages.extend(history[-6:])
+        messages.append({"role": "user", "content": clean})
     else:
         messages.append({"role": "user", "content": clean})
 
@@ -471,11 +478,16 @@ async def parse_message(
                 response_format={"type": "json_object"},
             )
             raw = response.choices[0].message.content or ""
+            _logger.debug("AI raw response: %s", raw[:200])
             parsed = _extract_json(raw)
             if parsed is not None:
                 return parsed
+            _logger.error("AI returned unparseable JSON: %s", raw[:300])
         except Exception as exc:
-            _logger.error("AI parse failed (attempt %d): %s", attempt + 1, exc)
+            _logger.error(
+                "AI parse failed (attempt %d/%d) model=%s error=%s: %s",
+                attempt + 1, 2, _MODEL, type(exc).__name__, exc,
+            )
             if attempt == 1:
                 return None
 
