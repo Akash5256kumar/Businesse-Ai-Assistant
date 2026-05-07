@@ -5,15 +5,14 @@ import logging
 import re
 from typing import Any
 
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 
 from app.core.config import settings
 
 _logger = logging.getLogger(__name__)
-_client = AsyncGroq(api_key=settings.groq_api_key)
+_client = AsyncOpenAI(api_key=settings.openai_api_key)
 
-#_MODEL = "openai/gpt-oss-120b"
-_MODEL = "llama-3.3-70b-versatile"
+_MODEL = "gpt-5.4-mini"
 
 # ── Regex helpers ────────────────────────────────────────────────────────────
 
