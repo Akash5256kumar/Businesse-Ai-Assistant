@@ -12,7 +12,7 @@ from app.core.config import settings
 _logger = logging.getLogger(__name__)
 _client = AsyncOpenAI(api_key=settings.openai_api_key)
 
-_MODEL = "gpt-5.4-mini"
+_MODEL = "gpt-4o-mini"
 
 # ── Regex helpers ────────────────────────────────────────────────────────────
 
