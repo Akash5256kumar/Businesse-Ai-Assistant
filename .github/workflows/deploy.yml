@@ -36,17 +36,18 @@ jobs:
             set -e
 
             # Load full PATH so poetry and other tools are found
-            export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+            export PATH="/root/.local/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+            POETRY=/root/.local/bin/poetry
 
             echo "==> Pulling latest code..."
             cd /root/Businesse-Ai-Assistant
             git pull origin main
 
             echo "==> Installing dependencies..."
-            poetry install --no-root --only main
+            $POETRY install --no-root --only main
 
             echo "==> Running database migrations..."
-            poetry run alembic upgrade head
+            $POETRY run alembic upgrade head
 
             echo "==> Restarting service..."
             systemctl restart apna-backend.service
