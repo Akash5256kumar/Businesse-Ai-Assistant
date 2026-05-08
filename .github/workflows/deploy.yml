@@ -35,6 +35,9 @@ jobs:
           ssh $USER@$HOST << 'EOF'
             set -e
 
+            # Load full PATH so poetry and other tools are found
+            export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
             echo "==> Pulling latest code..."
             cd /root/Businesse-Ai-Assistant
             git pull origin main
