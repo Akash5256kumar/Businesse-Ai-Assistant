@@ -17,6 +17,12 @@ class Business(Base, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     owner_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    whatsapp_reminders_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default="true",
+    )
 
     owner: Mapped["User"] = relationship("User", back_populates="business")
 

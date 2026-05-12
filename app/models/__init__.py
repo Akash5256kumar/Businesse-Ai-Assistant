@@ -5,6 +5,7 @@ from app.models.otp_code import OTPCode
 from app.models.customer import Customer
 from app.models.transaction import Transaction
 from app.models.message_log import MessageLog
+from app.models.reminder_log import ReminderLog
 
 __all__ = [
     "TimestampMixin",
@@ -14,4 +15,5 @@ __all__ = [
     "Customer",
     "Transaction",
     "MessageLog",
+    "ReminderLog",
 ]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -54,7 +55,12 @@ def _build_history(logs: list[MessageLog]) -> list[dict[str, str]]:
     history: list[dict[str, str]] = []
     for log in logs:
         history.append({"role": "user", "content": log.user_message})
-        history.append({"role": "assistant", "content": log.reply})
+        # Use the stored JSON response so the AI sees structured context (product names,
+        # customer names, clarification questions) rather than human-readable replies.
+        if log.ai_response:
+            history.append({"role": "assistant", "content": json.dumps(log.ai_response)})
+        else:
+            history.append({"role": "assistant", "content": log.reply})
     return history
 
 
@@ -167,6 +173,13 @@ async def _process_tx(
             message=msg,
         ), None
 
+    # ── Sale — product name is mandatory before anything else ────────────────
+    if tx_type == "sale":
+        has_product = any(item.get("name", "").strip() for item in raw_items)
+        if not has_product:
+            q = "Kaunsa product add karna hai? 🙏"
+            return None, None, ChatResponse(reply=q, clarification_needed=q)
+
     # ── Sale / Payment — need customer ────────────────────────────────────────
     customer_name: str | None = tx.get("customer_name")
     if not customer_name:
@@ -246,8 +259,13 @@ async def handle_message(db: AsyncSession, user_id: int, raw_message: str) -> Ch
         reply_str, detail, clarification_resp = await _process_tx(db, user_id, tx)
 
         if clarification_resp is not None:
-            # Customer needs to be selected — stop processing, ask frontend
-            await _log(db, user_id, raw_message, parsed, clarification_resp.reply)
+            # If this is an AI-style clarification (product name, etc.), store
+            # clarification_needed in ai_response so the next turn detects it
+            # via _get_pending_clarification and preserves multi-turn context.
+            log_response = parsed
+            if clarification_resp.clarification_needed:
+                log_response = {**parsed, "clarification_needed": clarification_resp.clarification_needed}
+            await _log(db, user_id, raw_message, log_response, clarification_resp.reply)
             return clarification_resp
 
         if reply_str:

@@ -15,7 +15,7 @@ We have a WhatsApp-style chat UI (Business Assistant). The backend API has been 
 `POST /api/v1/chat/`
 
 The response now includes 2 new fields:
-
+                                                                                                                                                                                                                                                                                                                                      
 ```json
 {
   "reply": "Kaun se Sharma ji? Neeche se select karo 👇",

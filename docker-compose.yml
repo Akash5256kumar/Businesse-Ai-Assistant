@@ -1,5 +1,6 @@
 version: '3.8'
 
+cat > /root/Businesse-Ai-Assistant/docker-compose.yml << 'COMPOSEOF'
 services:
   postgres:
     image: postgres:15-alpine
@@ -7,10 +8,8 @@ services:
     restart: always
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: SolutionBowl@2026
       POSTGRES_DB: apna_business
-    ports:
-      - '5432:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -19,8 +18,10 @@ services:
     container_name: apna_redis
     restart: always
     ports:
-      - '6379:6379'
+      - '127.0.0.1:6379:6379'
     command: redis-server --save 60 1
 
 volumes:
   pgdata:
+COMPOSEOF
+

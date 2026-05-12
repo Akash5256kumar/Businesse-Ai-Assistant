@@ -10,6 +10,7 @@ from app.api.v1.chat import router as chat_router
 from app.api.v1.customers import router as customers_router
 from app.api.v1.home import router as home_router
 from app.api.v1.profile import router as profile_router
+from app.api.v1.reminders import router as reminders_router
 
 
 @asynccontextmanager
@@ -40,6 +41,7 @@ app.include_router(chat_router)
 app.include_router(customers_router)
 app.include_router(home_router)
 app.include_router(profile_router)
+app.include_router(reminders_router)
 
 
 @app.get("/")
