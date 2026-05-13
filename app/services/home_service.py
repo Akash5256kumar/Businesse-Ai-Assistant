@@ -14,6 +14,7 @@ from app.schemas.home import (
     BusinessInfo,
     DailyStats,
     HomeResponse,
+    InvoiceItemSchema,
     RecentTransaction,
     TransactionDetailResponse,
     TransactionListItem,
@@ -257,6 +258,23 @@ def _detail_highlights(tx: Transaction) -> list[str]:
     return highlights
 
 
+def _build_invoice_items(tx: Transaction) -> list[InvoiceItemSchema]:
+    result: list[InvoiceItemSchema] = []
+    for item in tx.items or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        raw_qty = item.get("quantity")
+        quantity = float(raw_qty) if raw_qty not in (None, "") else 1.0
+        raw_sub = item.get("subtotal")
+        subtotal = float(raw_sub) if raw_sub not in (None, "") else 0.0
+        rate = subtotal / quantity if quantity else subtotal
+        result.append(InvoiceItemSchema(name=name, quantity=quantity, rate=rate))
+    return result
+
+
 async def get_transaction_detail(
     db: AsyncSession,
     user_id: int,
@@ -281,6 +299,11 @@ async def get_transaction_detail(
         image_url="",
         description=_detail_description(tx),
         amount=float(tx.amount),
+        pending_amount=float(tx.pending_amount) if tx.pending_amount is not None else 0.0,
+        is_credit=tx.is_credit,
+        customer_name=tx.customer.name if tx.customer else None,
+        customer_phone=tx.customer.phone if tx.customer else None,
+        items=_build_invoice_items(tx),
         created_at=tx.created_at,
         type=tx.type.lower(),
         highlights=_detail_highlights(tx),

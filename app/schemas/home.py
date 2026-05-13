@@ -54,6 +54,12 @@ class TransactionListResponse(BaseModel):
     has_more: bool
 
 
+class InvoiceItemSchema(BaseModel):
+    name: str
+    quantity: float
+    rate: float
+
+
 class TransactionDetailResponse(BaseModel):
     id: int
     title: str
@@ -61,6 +67,11 @@ class TransactionDetailResponse(BaseModel):
     image_url: str = ""
     description: str
     amount: float
+    pending_amount: float = 0
+    is_credit: bool = False
+    customer_name: str | None = None
+    customer_phone: str | None = None
+    items: list[InvoiceItemSchema] = []
     created_at: datetime
     type: str
     highlights: list[str] = []
