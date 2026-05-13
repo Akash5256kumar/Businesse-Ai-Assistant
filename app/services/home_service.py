@@ -129,7 +129,7 @@ async def get_home_data(db: AsyncSession, user_id: int) -> HomeResponse:
                 id=tx.id,
                 type=tx.type,
                 customer_name=tx.customer.name if tx.customer else None,
-                amount=float(tx.amount),
+                amount=_effective_amount(tx),
                 is_credit=tx.is_credit,
                 date=tx.created_at.date(),
             )
@@ -165,7 +165,7 @@ async def get_transactions_page(
                 id=tx.id,
                 type=tx.type,
                 customer_name=tx.customer.name if tx.customer else None,
-                amount=float(tx.amount),
+                amount=_effective_amount(tx),
                 is_credit=tx.is_credit,
                 note=tx.note,
                 created_at=tx.created_at.date(),
@@ -175,6 +175,24 @@ async def get_transactions_page(
         page=page,
         has_more=has_more,
     )
+
+
+def _effective_amount(tx: "Transaction") -> float:
+    """Return items-sum when line items are recorded, else the stored amount.
+
+    The stored ``tx.amount`` can be wrong if the user entered items correctly
+    but typed a different value in the amount field.  When items exist their
+    subtotals are the source of truth.
+    """
+    if tx.items:
+        items_sum = sum(
+            float(item["subtotal"])
+            for item in tx.items
+            if isinstance(item, dict) and item.get("subtotal") not in (None, "")
+        )
+        if items_sum > 0:
+            return items_sum
+    return float(tx.amount)
 
 
 def _format_amount(value: float) -> str:
@@ -298,7 +316,7 @@ async def get_transaction_detail(
         subtitle=_detail_subtitle(tx),
         image_url="",
         description=_detail_description(tx),
-        amount=float(tx.amount),
+        amount=_effective_amount(tx),
         pending_amount=float(tx.pending_amount) if tx.pending_amount is not None else 0.0,
         is_credit=tx.is_credit,
         customer_name=tx.customer.name if tx.customer else None,
