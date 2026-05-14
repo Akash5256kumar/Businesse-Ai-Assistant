@@ -141,6 +141,16 @@ def _try_regex(clean: str) -> dict | None:
 
 # ── System prompt ────────────────────────────────────────────────────────────
 
+_MURIL_INTENT_TO_TX_TYPE: dict[str, str] = {
+    "ADD_SALE": "sale",
+    "ADD_PAYMENT": "payment",
+    "VIEW_BALANCE": "query",
+    "ADD_EXPENSE": "expense",
+    "VIEW_TRANSACTIONS": "query",
+    "ADD_CUSTOMER": "sale",   # Closest billing type
+    "SEND_REMINDER": "query",
+}
+
 _SYSTEM_PROMPT = """\
 You are a smart Business Assistant for Indian local shopkeepers (kirana, grocery, hardware, etc.).
 Users write in Hindi, Hinglish, or English.
@@ -445,12 +455,73 @@ def _needs_conversation_context(
     return bool(_FOLLOW_UP_HINTS.search(clean))
 
 
+def _build_muril_context_section(
+    muril_context: dict | None,
+    client_hints: dict | None,
+) -> str:
+    """
+    Builds an additional context section appended to _SYSTEM_PROMPT when
+    MuRIL analysis is available.  The section gives the LLM strong hints
+    without overriding its own reasoning.
+    """
+    lines: list[str] = []
+
+    if client_hints:
+        lang = client_hints.get("lang_hint") or client_hints.get("script")
+        if lang:
+            lines.append(f"Client script detected: {lang}")
+
+    if muril_context:
+        lang = muril_context.get("detected_language")
+        if lang:
+            lines.append(f"Input language (MuRIL): {lang}")
+
+        intent = muril_context.get("intent", "UNCLEAR")
+        conf = muril_context.get("intent_confidence", 0.0)
+        if intent != "UNCLEAR" and conf >= 0.60:
+            tx_hint = _MURIL_INTENT_TO_TX_TYPE.get(intent, intent.lower())
+            lines.append(
+                f"MuRIL intent: {intent} → likely transaction type: \"{tx_hint}\" "
+                f"(confidence {conf:.0%}) — treat as a strong hint, verify against message."
+            )
+
+        entities = muril_context.get("entities", [])
+        high_conf = [e for e in entities if e.get("score", 0) >= 0.75]
+        if high_conf:
+            entity_strs = [
+                f"{e['type']}={e['value']}({e['score']:.2f})" for e in high_conf[:6]
+            ]
+            lines.append(f"MuRIL entities: {', '.join(entity_strs)}")
+            # Surface person names explicitly so LLM doesn't ask for them
+            persons = [e["value"] for e in high_conf if e["type"] == "PERSON"]
+            if persons:
+                lines.append(
+                    f"Detected customer name candidate(s): {', '.join(persons)} — "
+                    "use if no name is explicitly provided and no pronoun can resolve it."
+                )
+
+    if not lines:
+        return ""
+
+    section = (
+        "\n\n══════════════════════════════════════════════\n"
+        "MURIL PRE-ANALYSIS (use as strong hints — do not repeat questions already answered)\n"
+        "══════════════════════════════════════════════\n"
+    )
+    section += "\n".join(lines)
+    section += "\n"
+    return section
+
+
 def _build_messages(
     clean: str,
     history: list[dict[str, str]] | None,
     pending_clarification: dict[str, str] | None,
+    muril_context: dict | None = None,
+    client_hints: dict | None = None,
 ) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    system_content = _SYSTEM_PROMPT + _build_muril_context_section(muril_context, client_hints)
+    messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
 
     if pending_clarification:
         # Include older history FIRST so multi-turn chains retain full context.
@@ -487,11 +558,17 @@ async def parse_message(
     message: str,
     history: list[dict[str, str]] | None = None,
     pending_clarification: dict[str, str] | None = None,
+    muril_context: dict | None = None,
+    client_hints: dict | None = None,
 ) -> dict | None:
     """
     Hybrid parser:
-      1. Regex fast-path  → free, instant (simple queries / payments / expenses)
-      2. Groq AI fallback → for complex multi-item messages
+      1. Regex fast-path  — free, instant (simple queries / payments / expenses)
+      2. LLM fallback     — for complex multi-item messages, enriched with MuRIL context
+
+    muril_context: output of MurilService.analyze() — injected into the LLM system prompt
+                   as strong hints (intent, entities, language).
+    client_hints:  Flutter pre-processor fields (raw_text, script, lang_hint).
     """
     clean = _preprocess(message)
     use_context = _needs_conversation_context(clean, history, pending_clarification)
@@ -502,13 +579,15 @@ async def parse_message(
         _logger.debug("regex parsed: %s", quick["transactions"][0]["type"])
         return quick
 
-    # AI path — complex message
+    # AI path — complex message, MuRIL context injected into system prompt
     _logger.debug("sending to AI: %s", clean[:60])
     for attempt in range(2):
         try:
             response = await _client.chat.completions.create(
                 model=_MODEL,
-                messages=_build_messages(clean, history, pending_clarification),
+                messages=_build_messages(
+                    clean, history, pending_clarification, muril_context, client_hints
+                ),
                 temperature=0,
                 max_tokens=1024,
                 response_format={"type": "json_object"},

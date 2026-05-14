@@ -18,7 +18,14 @@ async def chat(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ChatResponse:
-    return await handle_message(db, current_user.id, payload.message)
+    return await handle_message(
+        db,
+        current_user.id,
+        payload.message,
+        raw_text=payload.raw_text,
+        script=payload.script,
+        lang_hint=payload.lang_hint,
+    )
 
 
 @router.post("/confirm-customer/", response_model=ChatResponse)

@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import app.models  # ensure all ORM models are registered before mapper use
 from app.core.config import settings
 from app.core.redis import init_redis, close_redis
+from app.services.muril_service import muril_service
 from app.api.v1.auth import router as auth_router
 from app.api.v1.chat import router as chat_router
 from app.api.v1.customers import router as customers_router
@@ -16,6 +17,7 @@ from app.api.v1.reminders import router as reminders_router
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     await init_redis()
+    await muril_service.initialize()
     yield
     await close_redis()
 

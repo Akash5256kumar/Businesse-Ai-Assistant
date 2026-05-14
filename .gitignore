@@ -40,6 +40,10 @@ tmp/
 # OS files
 .DS_Store
 
+# MuRIL model weights and HuggingFace cache (transfer to server via scp/rsync)
+models/
+.muril_cache/
+
 # Optional: ignore local secrets and service files
 secrets.yml
 credentials.json

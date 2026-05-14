@@ -1,0 +1,98 @@
+{
+  "ADD_SALE": [
+    "Ram ko 500 rupees ka saman becha",
+    "Aaj Suresh ko 3 kg aata diya udhaar mein",
+    "Sold 2 pieces to Mohan for 300",
+    "Raju ne 1000 ka maal liya",
+    "Priya ko grocery di, total 750 hua",
+    "बेचा 5 किलो चावल 200 रुपये में",
+    "सुरेश को आटा दिया 50 रुपये का",
+    "Amit ne kapda liya 2000 mein",
+    "Customer ne 4 litre tel liya 480 rupay mein",
+    "Deepak ko dawa di 150 ka udhaar"
+  ],
+  "ADD_PAYMENT": [
+    "Ram ne 500 rupees diye",
+    "Suresh ne payment ki 1000",
+    "Mohan ne udhaar chukaya 300",
+    "Received 750 from Priya",
+    "रवि ने 200 रुपये जमा किए",
+    "Payment mili Raju se 600",
+    "Amit ne 2000 diye aaj",
+    "Customer ne paise de diye 450",
+    "Deepak ka hisaab settle hua 1500",
+    "Sita ne 800 rupee pay kiya"
+  ],
+  "VIEW_BALANCE": [
+    "Ram ka kitna baaki hai",
+    "Suresh ne kitna dena hai",
+    "Mohan ka balance kya hai",
+    "How much does Priya owe me",
+    "रवि का बकाया कितना है",
+    "Raju ka account check karo",
+    "Amit ka total udhaar batao",
+    "Customer ka pending amount kya hai",
+    "Deepak ne abhi tak kitna nahi diya",
+    "Sita ka hisaab dikhao"
+  ],
+  "ADD_EXPENSE": [
+    "Aaj 200 rupees bijli bill diya",
+    "500 ka kiraya diya",
+    "Shop maintenance mein 1000 kharch hua",
+    "Petrol mein 300 gaya",
+    "दुकान ka किराया 5000 दिया",
+    "Light bill 450 bhar diya",
+    "Staff ko 8000 salary di",
+    "Transport pe 600 kharch hua",
+    "Packaging material 250 mein liya",
+    "Mobile recharge 199 ka kiya"
+  ],
+  "SEND_REMINDER": [
+    "Ram ko payment reminder bhejo",
+    "Suresh ko message karo ki paise de",
+    "Mohan ko reminder send karo",
+    "Remind Priya about her dues",
+    "रवि को उधार का reminder भेजो",
+    "Raju ko WhatsApp karo pending amount ke liye",
+    "Amit ko yaad dilao payment ka",
+    "Customer ko message bhejo baaki rakam ke liye",
+    "Deepak ko kal tak payment karne ka bol do",
+    "Sita ko notification bhejo"
+  ],
+  "VIEW_TRANSACTIONS": [
+    "Aaj ki sabhi transactions dikhao",
+    "Is hafte ki list batao",
+    "Last 7 days ka hisaab",
+    "Show me today's sales",
+    "आज का पूरा हिसाब दिखाओ",
+    "Ram ke saath ki saari transactions",
+    "Pichle mahine ka summary batao",
+    "All transactions for this month",
+    "Aaj kitna bika aur kitna aaya",
+    "History dikhao sab ki"
+  ],
+  "ADD_CUSTOMER": [
+    "Naya customer add karo Ram naam ka",
+    "Suresh ka number 9876543210 save karo",
+    "New party add: Mohan, phone 9123456789",
+    "Add customer Priya with mobile 9988776655",
+    "नया खाता खोलो राम का",
+    "Raju ko party mein add karo",
+    "Amit ka naya account banao",
+    "Register new customer Deepak",
+    "Sita ka naam aur number add karo",
+    "Create account for Geeta, 9000011112"
+  ],
+  "CANCEL": [
+    "Nahi, chodo",
+    "Cancel karo",
+    "Galti ho gayi, mat karo",
+    "No, don't do it",
+    "रहने दो",
+    "Undo karo",
+    "Back karo",
+    "Mujhe nahi karna",
+    "Stop",
+    "Abhi nahi"
+  ]
+}

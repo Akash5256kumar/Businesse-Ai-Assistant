@@ -3,8 +3,16 @@ from __future__ import annotations
 from pydantic import BaseModel, field_validator
 
 
+# ── Inbound request ────────────────────────────────────────────────────────────
+
 class ChatRequest(BaseModel):
     message: str
+
+    # MuRIL pre-processor hints sent by the Flutter client (all optional).
+    # When present, the backend skips duplicate preprocessing and trusts these.
+    raw_text: str | None = None      # Original text before client normalisation
+    script: str | None = None        # "devanagari" | "latin" | "mixed"
+    lang_hint: str | None = None     # BCP-47: "hi-Deva" | "hi-Latn" | "en"
 
     @field_validator("message")
     @classmethod
@@ -14,6 +22,8 @@ class ChatRequest(BaseModel):
             raise ValueError("Message cannot be empty")
         return v
 
+
+# ── Transaction sub-models ─────────────────────────────────────────────────────
 
 class ResponseItem(BaseModel):
     name: str
@@ -25,7 +35,7 @@ class ResponseItem(BaseModel):
 
 class TransactionDetail(BaseModel):
     type: str  # "sale" | "payment" | "purchase" | "expense" | "query"
-    status: str = "recorded"  # "recorded" | "error"
+    status: str = "recorded"
     customer_name: str | None = None
     total_amount: float = 0
     amount_paid: float | None = None
@@ -37,12 +47,35 @@ class TransactionDetail(BaseModel):
     message: str = ""
 
 
+# ── Customer candidate ─────────────────────────────────────────────────────────
+
 class CustomerCandidate(BaseModel):
     id: int
     name: str
     phone: str | None = None
     pending: float = 0.0
+    # MuRIL embedding cosine similarity between the user's query and this
+    # customer's stored name.  Null when MuRIL is disabled/unavailable.
+    similarity_score: float | None = None
 
+
+# ── MuRIL analysis (returned inside ChatResponse) ─────────────────────────────
+
+class MurilEntityResponse(BaseModel):
+    type: str    # PERSON | AMOUNT | PRODUCT | DATE | QUANTITY
+    value: str   # surface form extracted from input
+    score: float # confidence in [0, 1]
+
+
+class MurilAnalysisResponse(BaseModel):
+    detected_language: str          # BCP-47 tag ("hi-Latn", "hi-Deva", "en")
+    intent: str                     # classified intent label
+    intent_confidence: float        # in [0, 1]
+    entities: list[MurilEntityResponse] = []
+    normalized_text: str = ""
+
+
+# ── Main response ──────────────────────────────────────────────────────────────
 
 class ChatResponse(BaseModel):
     reply: str
@@ -51,7 +84,11 @@ class ChatResponse(BaseModel):
     clarification_needed: str | None = None
     customer_candidates: list[CustomerCandidate] = []
     pending_transaction: dict | None = None
+    # MuRIL analysis — null when disabled or on the confirm-customer endpoint.
+    muril_analysis: MurilAnalysisResponse | None = None
 
+
+# ── Confirm-customer request ───────────────────────────────────────────────────
 
 class CustomerConfirmRequest(BaseModel):
     customer_id: int | None = None
@@ -60,7 +97,7 @@ class CustomerConfirmRequest(BaseModel):
     pending_transaction: dict
 
 
-# ── Internal AI parsing models (not returned to client) ─────────────────────
+# ── Internal AI parsing models (never returned to client) ─────────────────────
 
 class ParsedItem(BaseModel):
     name: str
@@ -71,7 +108,7 @@ class ParsedItem(BaseModel):
 
 
 class ParsedTransaction(BaseModel):
-    type: str  # "sale" | "payment" | "purchase" | "expense" | "query"
+    type: str
     customer_name: str | None = None
     total_amount: float = 0
     amount_paid: float | None = None

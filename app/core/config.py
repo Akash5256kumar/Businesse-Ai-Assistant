@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     # Groq
     groq_api_key: str = ""
 
+    # MuRIL NLP
+    muril_enabled: bool = True
+    muril_model_name: str = "google/muril-base-cased"
+    muril_cache_dir: str = ".muril_cache"
+    muril_similarity_threshold: float = 0.60
+
     # Cloudflare R2
     r2_account_id: str = ""
     r2_access_key_id: str = ""
