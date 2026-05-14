@@ -10,8 +10,8 @@ venv/
 .env.*
 *.env
 
-# Poetry
-poetry.lock
+# Poetry lock file should be committed for reproducible deployments
+# poetry.lock
 
 # Virtual environment
 .venv/
