@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     muril_model_name: str = "google/muril-base-cased"
     muril_cache_dir: str = ".muril_cache"
     muril_similarity_threshold: float = 0.60
+    muril_intent_threshold: float = 0.50
 
     # Cloudflare R2
     r2_account_id: str = ""

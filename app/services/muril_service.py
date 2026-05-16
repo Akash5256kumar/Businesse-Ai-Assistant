@@ -19,7 +19,12 @@ import re
 import threading
 from typing import Any
 
-import numpy as np
+try:
+    import numpy as np
+    _numpy_available = True
+except ImportError:
+    np = None  # type: ignore[assignment]
+    _numpy_available = False
 
 from app.core.config import settings
 
@@ -268,6 +273,11 @@ class MurilService:
         with self._lock:
             if self._initialised:
                 return
+            if not _numpy_available:
+                _logger.warning("numpy not installed — MuRIL disabled.")
+                self._initialised = True
+                return
+
             try:
                 from transformers import AutoModel, AutoTokenizer
 
@@ -291,8 +301,8 @@ class MurilService:
 
             except ImportError:
                 _logger.warning(
-                    "transformers / torch not installed — MuRIL disabled. "
-                    "Run: pip install transformers torch sentencepiece"
+                    "transformers / torch / numpy not installed — MuRIL disabled. "
+                    "Run: pip install transformers torch sentencepiece numpy"
                 )
             except Exception as exc:
                 _logger.error("MuRIL load failed: %s", exc, exc_info=True)
