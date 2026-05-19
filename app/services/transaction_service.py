@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.customer import Customer
 from app.models.transaction import Transaction
+from app.services.inventory_service import adjust_stock
 
 ZERO = Decimal("0")
 
@@ -33,6 +34,13 @@ async def record_sale(
     db.add(tx)
     customer.pending += pending_amount
     customer.total_sale += amount
+
+    for item in (items or []):
+        if isinstance(item, dict) and item.get("name"):
+            qty = Decimal(str(item.get("quantity", 0)))
+            rate = Decimal(str(item["rate_per_unit"])) if item.get("rate_per_unit") else None
+            await adjust_stock(db, user_id, item["name"], -qty, item.get("unit", "piece"), sale_price=rate)
+
     return tx
 
 
@@ -74,6 +82,13 @@ async def record_purchase(
         note=note,
     )
     db.add(tx)
+
+    for item in (items or []):
+        if isinstance(item, dict) and item.get("name"):
+            qty = Decimal(str(item.get("quantity", 0)))
+            rate = Decimal(str(item["rate_per_unit"])) if item.get("rate_per_unit") else None
+            await adjust_stock(db, user_id, item["name"], qty, item.get("unit", "piece"), purchase_price=rate)
+
     return tx
 
 

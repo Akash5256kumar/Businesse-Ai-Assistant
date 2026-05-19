@@ -6,6 +6,7 @@ from app.models.customer import Customer
 from app.models.transaction import Transaction
 from app.models.message_log import MessageLog
 from app.models.reminder_log import ReminderLog
+from app.models.inventory import Inventory
 
 __all__ = [
     "TimestampMixin",
@@ -16,4 +17,5 @@ __all__ = [
     "Transaction",
     "MessageLog",
     "ReminderLog",
+    "Inventory",
 ]

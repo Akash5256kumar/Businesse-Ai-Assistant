@@ -300,6 +300,8 @@ async def handle_message(
         muril_context=muril_analysis,
         client_hints=client_hints,
         shop_type=shop_type,
+        db=db,
+        user_id=user_id,
     )
 
     if parsed is None:

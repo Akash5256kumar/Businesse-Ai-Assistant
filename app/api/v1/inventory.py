@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.auth import get_current_user
+from app.core.database import get_db
+from app.models.user import User
+from app.schemas.inventory import InventoryItemResponse, InventoryListResponse, InventoryUpsertRequest
+from app.services import inventory_service
+
+router = APIRouter(prefix="/api/v1/inventory", tags=["inventory"])
+
+
+@router.get("/", response_model=InventoryListResponse)
+async def list_inventory(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> InventoryListResponse:
+    return await inventory_service.list_inventory(db, current_user.id)
+
+
+@router.post("/", response_model=InventoryItemResponse)
+async def upsert_inventory(
+    payload: InventoryUpsertRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> InventoryItemResponse:
+    item = await inventory_service.upsert_inventory(db, current_user.id, payload)
+    await db.commit()
+    return item
+
+
+@router.delete("/{item_id}", status_code=204)
+async def delete_inventory(
+    item_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    deleted = await inventory_service.delete_inventory_item(db, current_user.id, item_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Item not found")
+    await db.commit()

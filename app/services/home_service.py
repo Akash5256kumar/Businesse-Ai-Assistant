@@ -178,20 +178,13 @@ async def get_transactions_page(
 
 
 def _effective_amount(tx: "Transaction") -> float:
-    """Return items-sum when line items are recorded, else the stored amount.
+    """Return tx.amount — the agreed total stored at recording time.
 
-    The stored ``tx.amount`` can be wrong if the user entered items correctly
-    but typed a different value in the amount field.  When items exist their
-    subtotals are the source of truth.
+    tx.amount is the source of truth for all financial calculations:
+    customer.pending is derived from it, so using a different value
+    (e.g. items-sum) would create inconsistency between displayed amount
+    and pending balance.
     """
-    if tx.items:
-        items_sum = sum(
-            float(item["subtotal"])
-            for item in tx.items
-            if isinstance(item, dict) and item.get("subtotal") not in (None, "")
-        )
-        if items_sum > 0:
-            return items_sum
     return float(tx.amount)
 
 
@@ -259,20 +252,20 @@ def _detail_highlights(tx: Transaction) -> list[str]:
         highlights.append(f"Customer: {tx.customer.name}")
     if tx.type.lower() == "sale":
         highlights.append(f"Mode: {'Credit sale' if tx.is_credit else 'Cash sale'}")
-    if tx.pending_amount and float(tx.pending_amount) > 0:
-        highlights.append(
-            f"Pending on this transaction: {_format_amount(float(tx.pending_amount))}"
-        )
+    highlights.append(f"Total Amount: {_format_amount(float(tx.amount))}")
+    if tx.type.lower() == "sale" and tx.is_credit:
+        amount_paid = float(tx.amount) - float(tx.pending_amount or 0)
+        if amount_paid > 0:
+            highlights.append(f"Paid: {_format_amount(amount_paid)}")
     if tx.customer and float(tx.customer.pending) > 0:
         highlights.append(
-            f"Customer total pending: {_format_amount(float(tx.customer.pending))}"
+            f"Customer Pending (current): {_format_amount(float(tx.customer.pending))}"
         )
     if tx.note:
         highlights.append(f"Note: {tx.note}")
     for item in tx.items or []:
         if isinstance(item, dict):
             highlights.append(_item_highlight(item))
-    highlights.append(f"Recorded amount: {_format_amount(float(tx.amount))}")
     return highlights
 
 
@@ -288,8 +281,13 @@ def _build_invoice_items(tx: Transaction) -> list[InvoiceItemSchema]:
         quantity = float(raw_qty) if raw_qty not in (None, "") else 1.0
         raw_sub = item.get("subtotal")
         subtotal = float(raw_sub) if raw_sub not in (None, "") else 0.0
-        rate = subtotal / quantity if quantity else subtotal
-        result.append(InvoiceItemSchema(name=name, quantity=quantity, rate=rate))
+        # Prefer stored rate_per_unit; fall back to subtotal/quantity
+        raw_rate = item.get("rate_per_unit")
+        if raw_rate not in (None, ""):
+            rate = float(raw_rate)
+        else:
+            rate = subtotal / quantity if quantity else subtotal
+        result.append(InvoiceItemSchema(name=name, quantity=quantity, rate=rate, subtotal=subtotal))
     return result
 
 
@@ -310,14 +308,17 @@ async def get_transaction_detail(
             detail="Transaction not found",
         )
 
+    current_customer_pending = float(tx.customer.pending) if tx.customer else 0.0
+
     return TransactionDetailResponse(
         id=tx.id,
         title=_detail_title(tx.type.lower()),
         subtitle=_detail_subtitle(tx),
         image_url="",
         description=_detail_description(tx),
-        amount=_effective_amount(tx),
-        pending_amount=float(tx.pending_amount) if tx.pending_amount is not None else 0.0,
+        amount=float(tx.amount),
+        pending_amount=current_customer_pending,
+        customer_pending=current_customer_pending,
         is_credit=tx.is_credit,
         customer_name=tx.customer.name if tx.customer else None,
         customer_phone=tx.customer.phone if tx.customer else None,

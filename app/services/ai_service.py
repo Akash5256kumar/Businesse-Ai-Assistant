@@ -7,8 +7,11 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import settings
 from app.services.shop_context import get_shop_context
+from app.services.ai_tools import TOOLS, execute_tool
 
 _logger = logging.getLogger(__name__)
 _client = AsyncOpenAI(api_key=settings.openai_api_key)
@@ -567,15 +570,16 @@ async def parse_message(
     muril_context: dict | None = None,
     client_hints: dict | None = None,
     shop_type: str = "general",
+    db: AsyncSession | None = None,
+    user_id: int | None = None,
 ) -> dict | None:
     """
     Hybrid parser:
       1. Regex fast-path  — free, instant (simple queries / payments / expenses)
-      2. LLM fallback     — for complex multi-item messages, enriched with MuRIL context
+      2. LLM with tool calling — AI can call get_stock / get_customer_balance /
+         get_recent_price to ground answers in real DB data before returning JSON.
 
-    muril_context: output of MurilService.analyze() — injected into the LLM system prompt
-                   as strong hints (intent, entities, language).
-    client_hints:  Flutter pre-processor fields (raw_text, script, lang_hint).
+    db + user_id: required for tool calling. When None, tools are disabled.
     """
     clean = _preprocess(message)
     use_context = _needs_conversation_context(clean, history, pending_clarification)
@@ -586,19 +590,66 @@ async def parse_message(
         _logger.debug("regex parsed: %s", quick["transactions"][0]["type"])
         return quick
 
-    # AI path — complex message, MuRIL context injected into system prompt
+    # AI path — with tool calling when DB is available
     _logger.debug("sending to AI: %s", clean[:60])
+    use_tools = db is not None and user_id is not None
+
     for attempt in range(2):
         try:
-            response = await _client.chat.completions.create(
-                model=_MODEL,
-                messages=_build_messages(
-                    clean, history, pending_clarification, muril_context, client_hints, shop_type
-                ),
-                temperature=0,
-                max_tokens=1024,
-                response_format={"type": "json_object"},
+            messages = _build_messages(
+                clean, history, pending_clarification, muril_context, client_hints, shop_type
             )
+
+            if use_tools:
+                # First call: allow tool use
+                response = await _client.chat.completions.create(
+                    model=_MODEL,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    temperature=0,
+                    max_tokens=1024,
+                )
+                # Execute any tool calls the AI made
+                tool_calls = response.choices[0].message.tool_calls or []
+                if tool_calls:
+                    messages.append(response.choices[0].message)
+                    for tc in tool_calls:
+                        import json as _json
+                        args = _json.loads(tc.function.arguments)
+                        tool_result = await execute_tool(tc.function.name, args, db, user_id)
+                        _logger.debug("Tool %s → %s", tc.function.name, tool_result[:120])
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": tool_result,
+                        })
+                    # Second call: get final JSON with real data injected
+                    response = await _client.chat.completions.create(
+                        model=_MODEL,
+                        messages=messages,
+                        temperature=0,
+                        max_tokens=1024,
+                        response_format={"type": "json_object"},
+                    )
+                else:
+                    # No tool calls — re-request with json_object format
+                    response = await _client.chat.completions.create(
+                        model=_MODEL,
+                        messages=messages,
+                        temperature=0,
+                        max_tokens=1024,
+                        response_format={"type": "json_object"},
+                    )
+            else:
+                response = await _client.chat.completions.create(
+                    model=_MODEL,
+                    messages=messages,
+                    temperature=0,
+                    max_tokens=1024,
+                    response_format={"type": "json_object"},
+                )
+
             raw = response.choices[0].message.content or ""
             _logger.debug("AI raw response: %s", raw[:200])
             parsed = _extract_json(raw)

@@ -58,6 +58,7 @@ class InvoiceItemSchema(BaseModel):
     name: str
     quantity: float
     rate: float
+    subtotal: float   # pre-calculated to avoid floating-point display errors
 
 
 class TransactionDetailResponse(BaseModel):
@@ -66,11 +67,12 @@ class TransactionDetailResponse(BaseModel):
     subtitle: str
     image_url: str = ""
     description: str
-    amount: float
-    pending_amount: float = 0
+    amount: float           # tx.amount — the agreed total (source of truth)
+    pending_amount: float = 0   # customer's CURRENT pending balance
     is_credit: bool = False
     customer_name: str | None = None
     customer_phone: str | None = None
+    customer_pending: float = 0  # same as pending_amount, explicit alias for Flutter
     items: list[InvoiceItemSchema] = []
     created_at: datetime
     type: str
