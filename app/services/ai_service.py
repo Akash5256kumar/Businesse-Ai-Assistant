@@ -8,6 +8,7 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from app.core.config import settings
+from app.services.shop_context import get_shop_context
 
 _logger = logging.getLogger(__name__)
 _client = AsyncOpenAI(api_key=settings.openai_api_key)
@@ -519,8 +520,13 @@ def _build_messages(
     pending_clarification: dict[str, str] | None,
     muril_context: dict | None = None,
     client_hints: dict | None = None,
+    shop_type: str = "general",
 ) -> list[dict[str, str]]:
-    system_content = _SYSTEM_PROMPT + _build_muril_context_section(muril_context, client_hints)
+    system_content = (
+        _SYSTEM_PROMPT
+        + get_shop_context(shop_type)
+        + _build_muril_context_section(muril_context, client_hints)
+    )
     messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
 
     if pending_clarification:
@@ -560,6 +566,7 @@ async def parse_message(
     pending_clarification: dict[str, str] | None = None,
     muril_context: dict | None = None,
     client_hints: dict | None = None,
+    shop_type: str = "general",
 ) -> dict | None:
     """
     Hybrid parser:
@@ -586,7 +593,7 @@ async def parse_message(
             response = await _client.chat.completions.create(
                 model=_MODEL,
                 messages=_build_messages(
-                    clean, history, pending_clarification, muril_context, client_hints
+                    clean, history, pending_clarification, muril_context, client_hints, shop_type
                 ),
                 temperature=0,
                 max_tokens=1024,

@@ -23,6 +23,12 @@ class Business(Base, TimestampMixin):
         default=True,
         server_default="true",
     )
+    shop_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="general",
+        server_default="general",
+    )
 
     owner: Mapped["User"] = relationship("User", back_populates="business")
 

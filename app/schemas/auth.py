@@ -51,11 +51,15 @@ class BusinessSetupResponse(BaseModel):
     business_name: str
 
 
+_VALID_SHOP_TYPES = ("kirana", "hardware", "medical", "garments", "general")
+
+
 class ProfileSetupRequest(BaseModel):
     full_name: str
     user_type: str = "business"   # "business" | "customer"
     business_name: str | None = None  # required when user_type == "business"
     location: str | None = None       # optional, for business users
+    shop_type: str = "general"        # kirana | hardware | medical | garments | general
 
     @field_validator("full_name")
     @classmethod
@@ -87,6 +91,14 @@ class ProfileSetupRequest(BaseModel):
             raise ValueError("must be at most 100 characters")
         return v
 
+    @field_validator("shop_type")
+    @classmethod
+    def validate_shop_type(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in _VALID_SHOP_TYPES:
+            raise ValueError(f"shop_type must be one of: {', '.join(_VALID_SHOP_TYPES)}")
+        return v
+
 
 class ProfileSetupResponse(BaseModel):
     message: str
@@ -96,3 +108,4 @@ class ProfileSetupResponse(BaseModel):
     business_id: int | None = None
     business_name: str | None = None
     location: str | None = None
+    shop_type: str | None = None

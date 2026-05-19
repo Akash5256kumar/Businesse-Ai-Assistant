@@ -68,6 +68,7 @@ async def setup_profile(
             existing.slug = await _unique_slug(db, base_slug, exclude_id=existing.id)
             existing.name = payload.business_name
         existing.location = payload.location
+        existing.shop_type = payload.shop_type
         await db.flush()
         return ProfileSetupResponse(
             message="Profile updated successfully.",
@@ -77,6 +78,7 @@ async def setup_profile(
             business_id=existing.id,
             business_name=existing.name,
             location=existing.location,
+            shop_type=existing.shop_type,
         )
 
     slug = await _unique_slug(db, _slugify(payload.business_name))
@@ -84,6 +86,7 @@ async def setup_profile(
         name=payload.business_name,
         slug=slug,
         location=payload.location,
+        shop_type=payload.shop_type,
         owner_id=user.id,
     )
     db.add(business)
@@ -97,4 +100,5 @@ async def setup_profile(
         business_id=business.id,
         business_name=business.name,
         location=business.location,
+        shop_type=business.shop_type,
     )

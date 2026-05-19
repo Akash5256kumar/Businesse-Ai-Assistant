@@ -8,6 +8,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.business import Business
 from app.models.message_log import MessageLog
 from app.schemas.chat import (
     ChatResponse,
@@ -287,6 +288,10 @@ async def handle_message(
 
     muril_response = _format_muril_analysis(muril_analysis)
 
+    # ── Fetch shop_type from user's business ──────────────────────────────────
+    business = await db.scalar(select(Business).where(Business.owner_id == user_id))
+    shop_type = business.shop_type if business else "general"
+
     # ── Step 3: AI parse ──────────────────────────────────────────────────────
     parsed = await ai_service.parse_message(
         raw_message,
@@ -294,6 +299,7 @@ async def handle_message(
         pending_clarification=pending_clarification,
         muril_context=muril_analysis,
         client_hints=client_hints,
+        shop_type=shop_type,
     )
 
     if parsed is None:
