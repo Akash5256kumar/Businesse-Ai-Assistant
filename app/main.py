@@ -17,7 +17,8 @@ from app.api.v1.reminders import router as reminders_router
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     await init_redis()
-    await muril_service.initialize()
+    if settings.muril_enabled:
+        await muril_service.initialize()
     yield
     await close_redis()
 

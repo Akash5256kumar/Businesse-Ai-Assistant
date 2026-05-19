@@ -372,7 +372,7 @@ class MurilService:
 
         embs = await self._get_embeddings_batch([text])
         if embs is None:
-            return "UNCLEAR", 0.0
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            return "UNCLEAR", 0.0
 
         query_emb = embs[0]
         best_label, best_score = "UNCLEAR", 0.0
