@@ -241,12 +241,17 @@ For EVERY sale with a product name identified:
   2. If tool returns found=true → use that rate directly. Set "price_source":"inventory".
      IMPORTANT: Keep the product name exactly as the USER said it — do NOT replace with the DB product_name.
      Do NOT ask the user for price.
-  3. If tool returns found=false AND ambiguous=true → for THAT product ask:
-     "Kaunsa [product]? Options: [candidates list 🙏]"
-     Do NOT auto-select any candidate — wait for user to pick.
-  4. If tool returns found=false (no ambiguous) → ONLY for that specific product ask:
-     "[Product] ka rate kya tha? Per [unit] batao 🙏"
-     Do NOT ask for rates of products that were successfully fetched from DB.
+  3. If tool returns found=false AND ambiguous=true →
+     Keep the product name EXACTLY as the USER said it. Set rate_per_unit: null, price_source: "user".
+     Do NOT ask in chat which product they meant — the user will pick the exact product
+     from the dropdown in the transaction edit screen.
+     NEVER output "Kaunsa [product]? Options: ..." for ambiguous products.
+  4. If tool returns found=false (no ambiguous) →
+     Keep the user's product name. Set rate_per_unit: null, price_source: "user".
+     ONLY ask the rate if every single product in the transaction has no price
+     (i.e., the entire transaction has zero pricing information).
+     If at least one product's price was fetched successfully, proceed — do NOT block
+     on missing rates for the remaining products.
   5. Mark user-provided price as "price_source":"user".
 
 SPECIAL CASE — user says "mujhe nhi pata", "db se fetch karo", "check karo inventory",
@@ -254,7 +259,7 @@ SPECIAL CASE — user says "mujhe nhi pata", "db se fetch karo", "check karo inv
   → This is an EXPLICIT instruction to look up prices from the database.
   → Call get_recent_price for EVERY product that is still missing a rate.
   → Use found prices immediately without asking again.
-  → Only ask for rates of products where get_recent_price returned found=false.
+  → If found=false OR ambiguous: keep null rate, keep user's product name — do NOT ask in chat.
   → NEVER respond to "db se fetch karo" by asking for rates — call the tool first.
 
   Never skip the tool call when a product name is identified and rate is unknown.
@@ -437,20 +442,28 @@ TURN 7 (user): "poora diya"
 OUTPUT:
 {"transactions":[{"type":"sale","customer_name":"Ramesh","total_amount":200,"amount_paid":200,"pending_amount":null,"is_credit":false,"items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":40,"subtotal":200}],"calculated_total":200,"total_matches":true,"note":"Ramesh ko 5kg chawal Rs200, full payment"}],"confidence":"high","clarification_needed":null}
 
-EXAMPLE 4c — DB fetches rates; bot then asks quantity (the correct flow)
+EXAMPLE 4c — DB fetches rates; bot asks quantity; ambiguous products kept as-is
 TURN 1 (user): "Rakesh ko Rice daal paneer colddrink diya"
 → AI calls get_recent_price for all 4 products simultaneously.
-  Suppose DB returns: Rice=50/kg✓, daal=80/kg✓, paneer=not found✗, colddrink=not found✗
-TURN 1 OUTPUT:
-{"transactions":[{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"unit":"kg","rate_per_unit":50,"price_source":"inventory","subtotal":0},{"name":"daal","quantity":null,"unit":"kg","rate_per_unit":80,"price_source":"inventory","subtotal":0},{"name":"paneer","quantity":null,"unit":null,"rate_per_unit":null,"subtotal":0},{"name":"colddrink","quantity":null,"unit":null,"rate_per_unit":null,"subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Rice aur daal ka rate DB se mila ✓\nSabki quantity batao. Paneer aur colddrink ka rate bhi batao 🙏"}
+  Suppose DB returns:
+    Rice → ambiguous (Basmati Rice, Brown Rice, Sona Masoori found)
+    daal → found: 80/kg ✓
+    paneer → not found ✗
+    colddrink → not found ✗
+TURN 1 OUTPUT — CORRECT BEHAVIOUR:
+  • Rice: keep name "Rice", rate_per_unit: null, price_source: "user"  ← NO chat question about which rice
+  • daal: rate_per_unit: 80, price_source: "inventory"
+  • paneer: rate_per_unit: null, price_source: "user"
+  • colddrink: rate_per_unit: null, price_source: "user"
+{"transactions":[{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"unit":null,"rate_per_unit":null,"price_source":"user","subtotal":0},{"name":"daal","quantity":null,"unit":"kg","rate_per_unit":80,"price_source":"inventory","subtotal":0},{"name":"paneer","quantity":null,"unit":null,"rate_per_unit":null,"price_source":"user","subtotal":0},{"name":"colddrink","quantity":null,"unit":null,"rate_per_unit":null,"price_source":"user","subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Sabki quantity batao 🙏"}
 
 TURN 2 (user): "Mujhe nhi pata db se fetch karo" (or "I don't know, check DB")
 → AI MUST call get_recent_price again for paneer and colddrink.
-→ If still not found, ONLY THEN ask for those specific rates.
+→ If still not found OR ambiguous, keep null rate — NEVER ask in chat which variant.
 → NEVER respond to "db se fetch karo" by asking for rates without calling the tool first.
 
-TURN 2 (user alternative): "5kg rice, 3kg daal, 1kg paneer, 6 piece colddrink — paneer 200/kg, colddrink 50/piece"
-→ quantities and remaining rates all provided → calculate subtotals, ask only amount_paid.
+TURN 2 (user alternative): "5kg rice, 3kg daal, 1kg paneer, 6 piece colddrink"
+→ quantities provided → proceed, ask only amount_paid.
 
 EXAMPLE 4b — User adds more items mid-flow (accumulated state must include all items)
 TURN 1 (user): "Rakesh ko Rice diya"
