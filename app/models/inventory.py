@@ -14,6 +14,7 @@ class Inventory(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    category: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     product_name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False, default=Decimal("0"), server_default="0")
     unit: Mapped[str] = mapped_column(String(30), nullable=False, default="piece", server_default="piece")

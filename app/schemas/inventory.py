@@ -5,6 +5,7 @@ from pydantic import BaseModel, field_validator
 
 class InventoryItemResponse(BaseModel):
     id: int
+    category: str | None = None
     product_name: str
     quantity: float
     unit: str
@@ -17,11 +18,20 @@ class InventoryListResponse(BaseModel):
 
 
 class InventoryUpsertRequest(BaseModel):
+    category: str | None = None
     product_name: str
     quantity: float
     unit: str = "piece"
     last_purchase_price: float | None = None
     last_sale_price: float | None = None
+
+    @field_validator("category")
+    @classmethod
+    def validate_category(cls, v: str | None) -> str | None:
+        if v is not None:
+            v = v.strip().lower()
+            return v if v else None
+        return None
 
     @field_validator("product_name")
     @classmethod

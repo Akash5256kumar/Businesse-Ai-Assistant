@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal
+from difflib import SequenceMatcher
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,8 +27,11 @@ _UNIT_ALIASES: dict[str, str] = {
 }
 
 
-def _norm_product(name: str) -> str:
+def _norm(name: str) -> str:
     return re.sub(r"\s+", " ", name.strip().lower())
+
+# Keep legacy alias used in other modules
+_norm_product = _norm
 
 
 def _norm_unit(unit: str) -> str:
@@ -35,25 +39,52 @@ def _norm_unit(unit: str) -> str:
     return _UNIT_ALIASES.get(u, u)
 
 
+def _char_sim(a: str, b: str) -> float:
+    """Character-level similarity using difflib (handles typos like panner→paneer)."""
+    return SequenceMatcher(None, a, b).ratio()
+
+
 def _match_score(query: str, candidate: str) -> float:
-    """Return a [0, 1] similarity score. 1.0 = exact match."""
-    q, c = _norm_product(query), _norm_product(candidate)
+    """
+    Return a [0, 1] similarity score between query and candidate strings.
+    Handles:
+      - Exact / word-set matches
+      - Subset / superset word matches
+      - Character-level typo correction (panner → paneer, chawell → chawal)
+    """
+    q, c = _norm(query), _norm(candidate)
+    if not q or not c:
+        return 0.0
     if q == c:
         return 1.0
+
     q_words = set(q.split())
     c_words = set(c.split())
+
     if q_words == c_words:
         return 0.95
-    # All query words present in candidate and query is ≥ 60% as long as candidate
+    # All query words in candidate and query is ≥ 60 % as long as candidate
     if q_words.issubset(c_words) and len(q) >= len(c) * 0.6:
         return 0.85
-    # Candidate words all present in query (e.g. query "basmati rice 1kg" ↔ "basmati rice")
+    # All candidate words in query (e.g. "basmati rice 1kg" ↔ "basmati rice")
     if c_words.issubset(q_words):
-        return 0.8
-    # Single-word query: the word appears as a standalone word in candidate
+        return 0.80
+    # Single-word query matches a whole word in candidate
     if len(q_words) == 1 and q in c_words:
-        return 0.7
-    # Common words exist (weak)
+        return 0.70
+
+    # ── Character-level fuzzy (typo tolerance) ────────────────────────────────
+    q_list = q.split()
+    c_list = c.split()
+    if q_list and c_list:
+        # Each query word: find best matching candidate word by char similarity
+        word_sims = [max(_char_sim(qw, cw) for cw in c_list) for qw in q_list]
+        avg = sum(word_sims) / len(word_sims)
+        if avg >= 0.75:
+            # Scale into (0.65, 0.70] so it clears the 0.70 match threshold
+            return 0.65 + avg * 0.07  # 0.75→0.7025, 1.0→0.72
+
+    # Partial word overlap (weak signal)
     common = q_words & c_words
     if common:
         return 0.3 * len(common) / max(len(q_words), len(c_words))
@@ -61,33 +92,52 @@ def _match_score(query: str, candidate: str) -> float:
 
 
 def _fuzzy_match(query: str, candidate: str) -> bool:
-    """Legacy helper — kept for adjust_stock where a single best-match is acceptable."""
-    return _match_score(query, candidate) >= 0.7
+    """True when score ≥ 0.70 (used by adjust_stock and upsert lookups)."""
+    return _match_score(query, candidate) >= 0.70
+
+
+def _item_score(query: str, item: Inventory) -> float:
+    """Best score considering product_name AND category (if set)."""
+    name_score = _match_score(query, item.product_name)
+    if item.category:
+        cat_score = _match_score(query, item.category)
+        return max(name_score, cat_score)
+    return name_score
+
+
+def _to_response(item: Inventory) -> InventoryItemResponse:
+    return InventoryItemResponse(
+        id=item.id,
+        category=item.category,
+        product_name=item.product_name,
+        quantity=float(item.quantity),
+        unit=item.unit,
+        last_purchase_price=float(item.last_purchase_price) if item.last_purchase_price else None,
+        last_sale_price=float(item.last_sale_price) if item.last_sale_price else None,
+    )
 
 
 # ── Public DB functions (called by AI tool executor) ─────────────────────────
 
 async def get_stock(db: AsyncSession, user_id: int, product_name: str) -> dict:
-    result = await db.execute(
-        select(Inventory).where(Inventory.user_id == user_id)
-    )
+    result = await db.execute(select(Inventory).where(Inventory.user_id == user_id))
     all_items = result.scalars().all()
 
     scored = sorted(
-        [(i, _match_score(product_name, i.product_name)) for i in all_items],
+        [(i, _item_score(product_name, i)) for i in all_items],
         key=lambda x: x[1], reverse=True,
     )
-    # Keep only candidates with score >= 0.7
-    candidates = [(i, s) for i, s in scored if s >= 0.7]
+    candidates = [(i, s) for i, s in scored if s >= 0.70]
 
     if not candidates:
-        return {"found": False, "product_name": product_name, "message": f"'{product_name}' inventory mein nahi mila"}
+        return {"found": False, "product_name": product_name,
+                "message": f"'{product_name}' inventory mein nahi mila"}
 
-    # Exact or near-exact single match → return directly
     if len(candidates) == 1 or candidates[0][1] >= 0.95:
         item = candidates[0][0]
         return {
             "found": True,
+            "category": item.category,
             "product_name": item.product_name,
             "quantity": float(item.quantity),
             "unit": item.unit,
@@ -96,26 +146,24 @@ async def get_stock(db: AsyncSession, user_id: int, product_name: str) -> dict:
             "updated_at": item.updated_at.strftime("%Y-%m-%d %H:%M") if item.updated_at else None,
         }
 
-    # Multiple matches — return all names so AI can ask the user
     names = [i.product_name for i, _ in candidates[:5]]
     return {
         "found": False,
         "ambiguous": True,
         "product_name": product_name,
         "candidates": names,
-        "message": f"Multiple products found for '{product_name}': {', '.join(names)}. Please clarify which one.",
+        "message": f"Multiple products found for '{product_name}': {', '.join(names)}. Please clarify.",
     }
 
 
 async def get_customer_balance(db: AsyncSession, user_id: int, customer_name: str) -> dict:
-    result = await db.execute(
-        select(Customer).where(Customer.user_id == user_id)
-    )
+    result = await db.execute(select(Customer).where(Customer.user_id == user_id))
     all_customers = result.scalars().all()
 
     matches = [c for c in all_customers if _fuzzy_match(customer_name, c.name)]
     if not matches:
-        return {"found": False, "customer_name": customer_name, "message": f"'{customer_name}' customer nahi mila"}
+        return {"found": False, "customer_name": customer_name,
+                "message": f"'{customer_name}' customer nahi mila"}
 
     customer = matches[0]
     return {
@@ -130,23 +178,22 @@ async def get_customer_balance(db: AsyncSession, user_id: int, customer_name: st
 async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) -> dict:
     """
     Find the best available price for a product.
-    Priority order:
-      1. Inventory table  — last_sale_price (preferred for sales), then last_purchase_price
-      2. Past transactions — most recent rate_per_unit from sale/purchase items
-    Returns the first source that has a confident single match with a known price.
+    Priority:
+      1. Inventory table — last_sale_price (preferred for sales), then last_purchase_price.
+         Also matches by category so "Rice" finds "Basmati Rice" whose category="rice".
+      2. Past transactions — most recent rate_per_unit from sale/purchase items.
     """
     # ── Source 1: Inventory table ─────────────────────────────────────────────
     inv_result = await db.execute(select(Inventory).where(Inventory.user_id == user_id))
     all_inv = inv_result.scalars().all()
 
     scored_inv = sorted(
-        [(i, _match_score(product_name, i.product_name)) for i in all_inv],
+        [(i, _item_score(product_name, i)) for i in all_inv],
         key=lambda x: x[1], reverse=True,
     )
-    candidates_inv = [(i, s) for i, s in scored_inv if s >= 0.7]
+    candidates_inv = [(i, s) for i, s in scored_inv if s >= 0.70]
 
     if candidates_inv:
-        # Ambiguous inventory match → ask for clarification immediately
         if len(candidates_inv) > 1 and candidates_inv[0][1] < 0.95:
             names = [i.product_name for i, _ in candidates_inv[:5]]
             return {
@@ -158,18 +205,18 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
             }
 
         best_inv, best_score = candidates_inv[0]
-        # Prefer last_sale_price (most relevant for a customer sale), fall back to purchase price
         price = best_inv.last_sale_price or best_inv.last_purchase_price
         if price:
             return {
                 "found": True,
+                "category": best_inv.category,
                 "product_name": best_inv.product_name,
                 "rate": float(price),
                 "unit": best_inv.unit or "",
                 "source": "inventory",
                 "score": best_score,
             }
-        # Inventory entry exists but has no price stored — fall through to transactions
+        # Inventory entry exists but no price stored — fall through to transactions
 
     # ── Source 2: Past transactions ───────────────────────────────────────────
     tx_result = await db.execute(
@@ -180,7 +227,7 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
     )
     txs = tx_result.scalars().all()
 
-    seen: dict[str, tuple[float, dict]] = {}  # norm_name → (score, data)
+    seen: dict[str, tuple[float, dict]] = {}
     for tx in txs:
         for item in tx.items or []:
             if not isinstance(item, dict):
@@ -190,9 +237,9 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
             if not name or not rate:
                 continue
             score = _match_score(product_name, name)
-            if score < 0.7:
+            if score < 0.70:
                 continue
-            key = _norm_product(name)
+            key = _norm(name)
             if key not in seen or score > seen[key][0]:
                 seen[key] = (score, {
                     "found": True,
@@ -213,7 +260,6 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
         }
 
     best_score, best_data = max(seen.values(), key=lambda x: x[0])
-
     high_conf = [v for s, v in seen.values() if s >= 0.85]
     if len(high_conf) == 1 or best_score >= 0.95:
         return best_data
@@ -225,29 +271,37 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
         "ambiguous": True,
         "product_name": product_name,
         "candidates": names,
-        "message": f"Multiple products found for '{product_name}': {', '.join(names)}. Please clarify which one.",
+        "message": f"Multiple products found for '{product_name}': {', '.join(names)}. Please clarify.",
     }
 
 
 async def search_inventory(db: AsyncSession, user_id: int, query: str) -> list[InventoryItemResponse]:
-    """Returns inventory items whose name contains the query string (case-insensitive)."""
-    norm_q = _norm_product(query)
+    """
+    Returns inventory items that match query against product_name OR category.
+    Uses fuzzy scoring so typos still find the right product.
+    """
     result = await db.execute(
         select(Inventory).where(Inventory.user_id == user_id).order_by(Inventory.product_name)
     )
     items = result.scalars().all()
-    matched = [i for i in items if norm_q in _norm_product(i.product_name)]
-    return [
-        InventoryItemResponse(
-            id=i.id,
-            product_name=i.product_name,
-            quantity=float(i.quantity),
-            unit=i.unit,
-            last_purchase_price=float(i.last_purchase_price) if i.last_purchase_price else None,
-            last_sale_price=float(i.last_sale_price) if i.last_sale_price else None,
-        )
-        for i in matched
-    ]
+
+    if not query.strip():
+        return [_to_response(i) for i in items]
+
+    norm_q = _norm(query)
+    matched = []
+    for i in items:
+        # Fast substring check first (common case, free)
+        name_match = norm_q in _norm(i.product_name)
+        cat_match = i.category and norm_q in _norm(i.category)
+        if name_match or cat_match:
+            matched.append(i)
+            continue
+        # Fuzzy fallback for typos
+        if _item_score(query, i) >= 0.70:
+            matched.append(i)
+
+    return [_to_response(i) for i in matched]
 
 
 # ── Stock update (called from transaction_service) ───────────────────────────
@@ -261,12 +315,10 @@ async def adjust_stock(
     purchase_price: Decimal | None = None,
     sale_price: Decimal | None = None,
 ) -> None:
-    norm_name = _norm_product(product_name)
+    norm_name = _norm(product_name)
     norm_unit = _norm_unit(unit)
 
-    result = await db.execute(
-        select(Inventory).where(Inventory.user_id == user_id)
-    )
+    result = await db.execute(select(Inventory).where(Inventory.user_id == user_id))
     all_items = result.scalars().all()
     existing = next((i for i in all_items if _fuzzy_match(norm_name, i.product_name)), None)
 
@@ -291,22 +343,10 @@ async def adjust_stock(
 
 async def list_inventory(db: AsyncSession, user_id: int) -> InventoryListResponse:
     result = await db.execute(
-        select(Inventory)
-        .where(Inventory.user_id == user_id)
-        .order_by(Inventory.product_name)
+        select(Inventory).where(Inventory.user_id == user_id).order_by(Inventory.product_name)
     )
     items = result.scalars().all()
-    return InventoryListResponse(items=[
-        InventoryItemResponse(
-            id=i.id,
-            product_name=i.product_name,
-            quantity=float(i.quantity),
-            unit=i.unit,
-            last_purchase_price=float(i.last_purchase_price) if i.last_purchase_price else None,
-            last_sale_price=float(i.last_sale_price) if i.last_sale_price else None,
-        )
-        for i in items
-    ])
+    return InventoryListResponse(items=[_to_response(i) for i in items])
 
 
 async def upsert_inventory(
@@ -314,16 +354,16 @@ async def upsert_inventory(
     user_id: int,
     payload: InventoryUpsertRequest,
 ) -> InventoryItemResponse:
-    norm_name = _norm_product(payload.product_name)
-    result = await db.execute(
-        select(Inventory).where(Inventory.user_id == user_id)
-    )
+    norm_name = _norm(payload.product_name)
+    result = await db.execute(select(Inventory).where(Inventory.user_id == user_id))
     all_items = result.scalars().all()
     existing = next((i for i in all_items if _fuzzy_match(norm_name, i.product_name)), None)
 
     if existing:
         existing.quantity = Decimal(str(payload.quantity))
         existing.unit = _norm_unit(payload.unit)
+        if payload.category is not None:
+            existing.category = payload.category
         if payload.last_purchase_price is not None:
             existing.last_purchase_price = Decimal(str(payload.last_purchase_price))
         if payload.last_sale_price is not None:
@@ -333,6 +373,7 @@ async def upsert_inventory(
     else:
         item = Inventory(
             user_id=user_id,
+            category=payload.category,
             product_name=norm_name,
             quantity=Decimal(str(payload.quantity)),
             unit=_norm_unit(payload.unit),
@@ -342,14 +383,7 @@ async def upsert_inventory(
         db.add(item)
         await db.flush()
 
-    return InventoryItemResponse(
-        id=item.id,
-        product_name=item.product_name,
-        quantity=float(item.quantity),
-        unit=item.unit,
-        last_purchase_price=float(item.last_purchase_price) if item.last_purchase_price else None,
-        last_sale_price=float(item.last_sale_price) if item.last_sale_price else None,
-    )
+    return _to_response(item)
 
 
 async def delete_inventory_item(db: AsyncSession, user_id: int, item_id: int) -> bool:
