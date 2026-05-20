@@ -128,16 +128,59 @@ async def get_customer_balance(db: AsyncSession, user_id: int, customer_name: st
 
 
 async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) -> dict:
-    result = await db.execute(
+    """
+    Find the best available price for a product.
+    Priority order:
+      1. Inventory table  — last_sale_price (preferred for sales), then last_purchase_price
+      2. Past transactions — most recent rate_per_unit from sale/purchase items
+    Returns the first source that has a confident single match with a known price.
+    """
+    # ── Source 1: Inventory table ─────────────────────────────────────────────
+    inv_result = await db.execute(select(Inventory).where(Inventory.user_id == user_id))
+    all_inv = inv_result.scalars().all()
+
+    scored_inv = sorted(
+        [(i, _match_score(product_name, i.product_name)) for i in all_inv],
+        key=lambda x: x[1], reverse=True,
+    )
+    candidates_inv = [(i, s) for i, s in scored_inv if s >= 0.7]
+
+    if candidates_inv:
+        # Ambiguous inventory match → ask for clarification immediately
+        if len(candidates_inv) > 1 and candidates_inv[0][1] < 0.95:
+            names = [i.product_name for i, _ in candidates_inv[:5]]
+            return {
+                "found": False,
+                "ambiguous": True,
+                "product_name": product_name,
+                "candidates": names,
+                "message": f"Multiple products found for '{product_name}': {', '.join(names)}. Please clarify.",
+            }
+
+        best_inv, best_score = candidates_inv[0]
+        # Prefer last_sale_price (most relevant for a customer sale), fall back to purchase price
+        price = best_inv.last_sale_price or best_inv.last_purchase_price
+        if price:
+            return {
+                "found": True,
+                "product_name": best_inv.product_name,
+                "rate": float(price),
+                "unit": best_inv.unit or "",
+                "source": "inventory",
+                "score": best_score,
+            }
+        # Inventory entry exists but has no price stored — fall through to transactions
+
+    # ── Source 2: Past transactions ───────────────────────────────────────────
+    tx_result = await db.execute(
         select(Transaction)
         .where(Transaction.user_id == user_id, Transaction.type.in_(["sale", "purchase"]))
         .order_by(Transaction.created_at.desc())
         .limit(100)
     )
-    txs = result.scalars().all()
+    txs = tx_result.scalars().all()
 
-    # Collect all distinct matches with their best score
-    seen: dict[str, tuple[float, dict]] = {}  # product_name → (score, data)
+    seen: dict[str, tuple[float, dict]] = {}  # norm_name → (score, data)
     for tx in txs:
         for item in tx.items or []:
             if not isinstance(item, dict):
@@ -156,23 +199,25 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
                     "product_name": name,
                     "rate": float(rate),
                     "unit": item.get("unit", ""),
+                    "source": "transactions",
                     "transaction_type": tx.type,
                     "date": tx.created_at.strftime("%Y-%m-%d"),
                     "score": score,
                 })
 
     if not seen:
-        return {"found": False, "product_name": product_name, "message": f"'{product_name}' ka koi recent price nahi mila"}
+        return {
+            "found": False,
+            "product_name": product_name,
+            "message": f"'{product_name}' ka koi price inventory ya transactions mein nahi mila. User se rate poochho.",
+        }
 
-    best = max(seen.values(), key=lambda x: x[0])
-    best_score, best_data = best
+    best_score, best_data = max(seen.values(), key=lambda x: x[0])
 
-    # Exact or near-exact single match
     high_conf = [v for s, v in seen.values() if s >= 0.85]
     if len(high_conf) == 1 or best_score >= 0.95:
         return best_data
 
-    # Multiple similar products → return candidates list
     candidates = sorted(seen.values(), key=lambda x: x[0], reverse=True)
     names = [v["product_name"] for _, v in candidates[:5]]
     return {

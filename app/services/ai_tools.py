@@ -59,16 +59,23 @@ TOOLS: list[dict] = [
         "function": {
             "name": "get_recent_price",
             "description": (
-                "Get the most recent sale or purchase price for a product "
-                "from past transactions. Use this when user asks about rate, "
-                "price, bhav, kya rate tha, etc."
+                "Get the best available price for a product from the shop database. "
+                "Checks the inventory table first (last_sale_price, last_purchase_price), "
+                "then falls back to past transactions. "
+                "ALWAYS call this for EVERY product in a sale whose rate_per_unit is not yet known. "
+                "Call it even when the user says 'mujhe nhi pata', 'db se fetch karo', "
+                "'check karo', 'I don't remember the price', etc. — that is an explicit instruction "
+                "to look up the price from the database. "
+                "If found=true, use the returned rate directly without asking the user. "
+                "If found=false AND ambiguous=true, ask user to pick from candidates. "
+                "If found=false AND no ambiguous, ONLY THEN ask user for that specific product's rate."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "product_name": {
                         "type": "string",
-                        "description": "Product name to look up the price for",
+                        "description": "Product name exactly as the user said it (e.g. 'daal', 'paneer', 'rice')",
                     }
                 },
                 "required": ["product_name"],
