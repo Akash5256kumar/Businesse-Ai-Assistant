@@ -12,12 +12,15 @@ from app.models.business import Business
 from app.models.message_log import MessageLog
 from app.schemas.chat import (
     ChatResponse,
+    ConfirmTransactionRequest,
     CustomerCandidate,
     CustomerConfirmRequest,
     MurilAnalysisResponse,
     MurilEntityResponse,
     ResponseItem,
     TransactionDetail,
+    TransactionDraft,
+    TransactionDraftItem,
 )
 from app.services import ai_service, customer_service, transaction_service
 from app.services.muril_service import muril_service
@@ -137,6 +140,57 @@ def _candidate_list(
     return result
 
 
+# ── Draft helpers ─────────────────────────────────────────────────────────────
+
+def _is_complete_sale(tx: dict) -> bool:
+    """True when all required fields for a sale are present and a draft can be shown."""
+    if tx.get("type") != "sale":
+        return False
+    if not tx.get("customer_name"):
+        return False
+    items = tx.get("items") or []
+    if not items:
+        return False
+    if tx.get("amount_paid") is None:
+        return False
+    for item in items:
+        if not item.get("name"):
+            return False
+        if item.get("quantity") is None:
+            return False
+        if item.get("rate_per_unit") is None:
+            return False
+    return True
+
+
+def _build_transaction_draft(tx: dict) -> TransactionDraft:
+    items = [
+        TransactionDraftItem(
+            name=item.get("name", ""),
+            quantity=float(item.get("quantity") or 0),
+            unit=item.get("unit"),
+            rate_per_unit=float(item.get("rate_per_unit") or 0),
+            subtotal=float(item.get("subtotal") or 0),
+            price_source=item.get("price_source", "user"),
+        )
+        for item in (tx.get("items") or [])
+        if item.get("name")
+    ]
+    total = float(tx.get("total_amount") or 0)
+    paid = float(tx.get("amount_paid") or 0)
+    pending = max(round(total - paid, 2), 0.0)
+    return TransactionDraft(
+        type=tx.get("type", "sale"),
+        customer_name=tx.get("customer_name"),
+        items=items,
+        total_amount=total,
+        amount_paid=paid,
+        pending_amount=pending,
+        is_credit=pending > 0,
+        note=tx.get("note"),
+    )
+
+
 # ── Transaction processor ─────────────────────────────────────────────────────
 
 async def _process_tx(
@@ -217,6 +271,15 @@ async def _process_tx(
         if not has_product:
             q = "Kaunsa product add karna hai? 🙏"
             return None, None, ChatResponse(reply=q, clarification_needed=q)
+
+        # ── Complete sale → show summary draft before recording ────────────────
+        if _is_complete_sale(tx):
+            draft = _build_transaction_draft(tx)
+            return None, None, ChatResponse(
+                reply="✅ Transaction ready hai — neeche review karo aur confirm karo 👇",
+                transaction_draft=draft,
+                pending_transaction=tx,
+            )
 
     # ── Sale / Payment — need customer ────────────────────────────────────────
     customer_name: str | None = tx.get("customer_name")
@@ -446,6 +509,68 @@ async def confirm_customer(
         )
 
     return ChatResponse(reply="Transaction type sahi nahi hai 🙏")
+
+
+# ── Confirm-transaction (draft summary card confirmation) ──────────────────────
+
+async def confirm_transaction(
+    db: AsyncSession,
+    user_id: int,
+    req: ConfirmTransactionRequest,
+) -> ChatResponse:
+    """
+    Called when the user taps Confirm on the transaction draft card.
+    Applies any edits, searches for the customer, and either:
+      - auto-records (single unambiguous match)
+      - returns customer_candidates (ambiguous → user selects via /confirm-customer/)
+      - asks for phone number (new customer not found)
+    """
+    tx = req.pending_transaction
+
+    # If customer already selected (e.g. after ambiguity resolution)
+    if req.customer_id is not None:
+        return await confirm_customer(
+            db, user_id,
+            CustomerConfirmRequest(customer_id=req.customer_id, pending_transaction=tx),
+        )
+
+    customer_name = req.customer_name or tx.get("customer_name")
+    if not customer_name:
+        return ChatResponse(reply="Customer ka naam batao 🙏")
+
+    # MuRIL-enhanced customer search
+    candidates_with_scores = await customer_service.search_by_name_with_muril(
+        db, user_id, customer_name
+    )
+    candidate_objs = [c for c, _ in candidates_with_scores]
+
+    # No match → new customer, ask for phone
+    if not candidate_objs:
+        return ChatResponse(
+            reply=(
+                f"'{customer_name}' system mein nahi hain.\n"
+                "Unka phone number kya hai? (ya 'skip' likho)"
+            ),
+            customer_candidates=[],
+            pending_transaction=tx,
+        )
+
+    # Single unambiguous match → auto-confirm and record
+    if len(candidate_objs) == 1:
+        return await confirm_customer(
+            db, user_id,
+            CustomerConfirmRequest(customer_id=candidate_objs[0].id, pending_transaction=tx),
+        )
+
+    # Multiple matches → let user pick
+    reply_text = (
+        f"'{customer_name}' naam ke {len(candidate_objs)} customers hain — sahi wala select karo 👇"
+    )
+    return ChatResponse(
+        reply=reply_text,
+        customer_candidates=_candidate_list(candidates_with_scores),
+        pending_transaction=tx,
+    )
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────

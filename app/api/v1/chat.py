@@ -6,8 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.models.user import User
-from app.schemas.chat import ChatRequest, ChatResponse, CustomerConfirmRequest
-from app.services.chat_service import confirm_customer, handle_message
+from app.schemas.chat import ChatRequest, ChatResponse, ConfirmTransactionRequest, CustomerConfirmRequest
+from app.services.chat_service import confirm_customer, confirm_transaction, handle_message
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
 
@@ -35,3 +35,12 @@ async def confirm_customer_endpoint(
     db: AsyncSession = Depends(get_db),
 ) -> ChatResponse:
     return await confirm_customer(db, current_user.id, payload)
+
+
+@router.post("/confirm-transaction/", response_model=ChatResponse)
+async def confirm_transaction_endpoint(
+    payload: ConfirmTransactionRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ChatResponse:
+    return await confirm_transaction(db, current_user.id, payload)

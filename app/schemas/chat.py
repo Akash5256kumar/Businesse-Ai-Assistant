@@ -75,15 +75,38 @@ class MurilAnalysisResponse(BaseModel):
     normalized_text: str = ""
 
 
+# ── Transaction draft (pre-confirmation summary card) ──────────────────────────
+
+class TransactionDraftItem(BaseModel):
+    name: str
+    quantity: float | None = None
+    unit: str | None = None
+    rate_per_unit: float | None = None
+    subtotal: float = 0.0
+    price_source: str = "user"  # "inventory" | "user"
+
+
+class TransactionDraft(BaseModel):
+    type: str
+    customer_name: str | None = None
+    items: list[TransactionDraftItem] = []
+    total_amount: float = 0.0
+    amount_paid: float = 0.0
+    pending_amount: float = 0.0
+    is_credit: bool = False
+    note: str | None = None
+
+
 # ── Main response ──────────────────────────────────────────────────────────────
 
 class ChatResponse(BaseModel):
-    reply: str
+    reply: str = ""
     transactions: list[TransactionDetail] = []
     confidence: str = "high"
     clarification_needed: str | None = None
     customer_candidates: list[CustomerCandidate] = []
     pending_transaction: dict | None = None
+    transaction_draft: TransactionDraft | None = None
     # MuRIL analysis — null when disabled or on the confirm-customer endpoint.
     muril_analysis: MurilAnalysisResponse | None = None
 
@@ -95,6 +118,15 @@ class CustomerConfirmRequest(BaseModel):
     customer_name: str | None = None
     customer_phone: str | None = None
     pending_transaction: dict
+
+
+# ── Confirm-transaction request (draft summary card confirmation) ───────────────
+
+class ConfirmTransactionRequest(BaseModel):
+    pending_transaction: dict
+    customer_id: int | None = None
+    customer_name: str | None = None
+    customer_phone: str | None = None
 
 
 # ── Internal AI parsing models (never returned to client) ─────────────────────
