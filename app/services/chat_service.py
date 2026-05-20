@@ -28,7 +28,7 @@ from app.services.muril_service import muril_service
 _logger = logging.getLogger(__name__)
 
 _VALID_TYPES = {"sale", "payment", "purchase", "expense", "query"}
-_HISTORY_LIMIT = 5
+_HISTORY_LIMIT = 12
 
 
 # ── Helper builders ───────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ def _build_history(logs: list[MessageLog]) -> list[dict[str, str]]:
     return history
 
 
-def _get_pending_clarification(logs: list[MessageLog]) -> dict[str, str] | None:
+def _get_pending_clarification(logs: list[MessageLog]) -> dict | None:
     if not logs:
         return None
     last_log = logs[-1]
@@ -108,6 +108,9 @@ def _get_pending_clarification(logs: list[MessageLog]) -> dict[str, str] | None:
     return {
         "previous_user_message": last_log.user_message,
         "assistant_question": clarification,
+        # Pass the full AI response so _build_messages can replay it accurately
+        # instead of injecting a fake {"transactions": []} that loses partial state.
+        "full_ai_response": last_log.ai_response,
     }
 
 
@@ -280,6 +283,12 @@ async def _process_tx(
                 transaction_draft=draft,
                 pending_transaction=tx,
             )
+
+        # Guard: items collected but amount_paid still unknown → ask before
+        # proceeding to customer lookup, which would trigger a premature flow.
+        if tx.get("amount_paid") is None:
+            q = "Kitna paisa mila? Amount batao 🙏"
+            return None, None, ChatResponse(reply=q, clarification_needed=q)
 
     # ── Sale / Payment — need customer ────────────────────────────────────────
     customer_name: str | None = tx.get("customer_name")

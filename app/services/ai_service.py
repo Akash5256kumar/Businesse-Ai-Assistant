@@ -217,12 +217,16 @@ RULE C3 — CONTEXT-AWARE NAME RESOLUTION (read carefully):
      the previous turn → treat the reply AS the customer name directly.
   d) No name found anywhere in context → ask ONCE, clearly.
 
-RULE C4 — NEVER ASK THE SAME QUESTION TWICE:
+RULE C4 — NEVER ASK THE SAME QUESTION TWICE — ACCUMULATE STATE:
   • If you asked "naam batao" in the previous turn AND user replied → that reply IS the name.
   • If you asked "kitna paisa" → user's reply IS the amount.
   • Combine all details across ALL turns to produce ONE complete resolved transaction.
   • Do NOT re-ask for anything already answered in this conversation.
   • Do NOT create extra transactions from old history turns.
+  • CRITICAL: Your own previous assistant messages in history contain partial transaction state
+    (customer_name, items[], amounts already resolved). READ them and CARRY THEM FORWARD.
+    If history shows transactions[0].customer_name = "Rakesh", do NOT ask for the name again.
+    If history shows items already collected, merge new items IN — don't replace them.
 
 RULE C5 — MULTIPLE CUSTOMERS WITH SAME NAME:
   • Set clarification_needed: "Kaunse [Name]? Mobile number bhi batao 🙏"
@@ -295,6 +299,25 @@ OUTPUT FORMAT
 }
 
 ══════════════════════════════════════════════
+PARTIAL STATE ACCUMULATION — CRITICAL
+══════════════════════════════════════════════
+When clarification_needed is NOT null AND you already have some transaction info:
+  • ALWAYS include the partial transaction in transactions[] with fields known so far.
+  • Set null (not omit) for fields you still need to ask.
+  • This gives the next turn structured memory — without it, you will forget customer names,
+    product names, amounts, etc. across turns and re-ask questions already answered.
+
+ONLY use transactions: [] when you have ZERO transaction info (e.g. bare "Sale entry" message).
+
+EXAMPLES of partial state:
+  After user gives customer name (still need product):
+    transactions: [{"type":"sale","customer_name":"Rakesh","items":[],"total_amount":null,"amount_paid":null,...}]
+  After user gives product too (still need rate/amount):
+    transactions: [{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"rate_per_unit":null,"subtotal":0}],...}]
+  After user gives rate but not amount_paid:
+    transactions: [{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":2,"unit":"kg","rate_per_unit":50,"subtotal":100}],"total_amount":100,"amount_paid":null,...}]
+
+══════════════════════════════════════════════
 FIELD RULES
 ══════════════════════════════════════════════
 - items[]          : MUST be non-empty with product names for "sale"; [] for payment/expense/query/purchase-without-items
@@ -350,42 +373,42 @@ INPUT: "raju ko 2kg aata 40/kg 1kg chawall 20/kg total 10000 usne 7000 diya baak
 OUTPUT:
 {"transactions":[{"type":"sale","customer_name":"Raju","total_amount":10000,"amount_paid":7000,"pending_amount":3000,"is_credit":true,"items":[{"name":"aata","quantity":2,"unit":"kg","rate_per_unit":40,"subtotal":80},{"name":"chawall","quantity":1,"unit":"kg","rate_per_unit":20,"subtotal":20}],"calculated_total":100,"total_matches":false,"note":"Raju ko Rs10000 ka maal, Rs7000 mila, Rs3000 baaki"}],"confidence":"high","clarification_needed":null}
 
-EXAMPLE 2 — Sale without product name → MUST ask for product (do NOT record)
+EXAMPLE 2 — Sale without product name → ask product, include partial state with customer+amount
 INPUT: "Akash ka samaan 1000 ka hua but usne 500 hi diya 500 baki h uska"
 OUTPUT:
-{"transactions":[],"confidence":"low","clarification_needed":"Kaunsa product add karna hai? 🙏"}
+{"transactions":[{"type":"sale","customer_name":"Akash","total_amount":1000,"amount_paid":500,"pending_amount":500,"is_credit":true,"items":[],"calculated_total":1000,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kaunsa product add karna hai? 🙏"}
 
 EXAMPLE 2b — After user provides product name (follow-up to Example 2)
 TURN 1 (user): "Akash ka samaan 1000 ka hua but usne 500 hi diya 500 baki h"
-TURN 2 (assistant): {"transactions":[],"confidence":"low","clarification_needed":"Kaunsa product add karna hai? 🙏"}
+TURN 2 (assistant): {"transactions":[{"type":"sale","customer_name":"Akash","total_amount":1000,"amount_paid":500,"pending_amount":500,"is_credit":true,"items":[],"calculated_total":1000,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kaunsa product add karna hai? 🙏"}
 TURN 3 (user): "aata"
 OUTPUT:
 {"transactions":[{"type":"sale","customer_name":"Akash","total_amount":1000,"amount_paid":500,"pending_amount":500,"is_credit":true,"items":[{"name":"aata","quantity":null,"unit":null,"rate_per_unit":null,"subtotal":1000}],"calculated_total":1000,"total_matches":true,"note":"Akash ko aata Rs1000, Rs500 mila, Rs500 baaki"}],"confidence":"high","clarification_needed":null}
 
 EXAMPLE 3 — Follow-up: bot asked for name, user replied with name only
 TURN 1 (user): "2kg aata 40/kg diya"
-TURN 2 (assistant): {"transactions":[],"confidence":"low","clarification_needed":"Kis customer ko diya? Naam batao 🙏"}
+TURN 2 (assistant): {"transactions":[{"type":"sale","customer_name":null,"items":[{"name":"aata","quantity":2,"unit":"kg","rate_per_unit":40,"subtotal":80}],"total_amount":80,"amount_paid":null,"pending_amount":null,"is_credit":false,"calculated_total":80,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kis customer ko diya? Naam batao 🙏"}
 TURN 3 (user): "Ramu"
 OUTPUT:
 {"transactions":[{"type":"sale","customer_name":"Ramu","total_amount":80,"amount_paid":80,"pending_amount":null,"is_credit":false,"items":[{"name":"aata","quantity":2,"unit":"kg","rate_per_unit":40,"subtotal":80}],"calculated_total":80,"total_matches":true,"note":"Ramu ko 2kg aata Rs80, full payment"}],"confidence":"high","clarification_needed":null}
 
-EXAMPLE 4 — Sale with customer but no product → ask product name first
+EXAMPLE 4 — Multi-turn: name → product → rate → amount (each turn keeps accumulated state)
 TURN 1 (user): "Ramesh ko saamaan diya"
-TURN 2 (assistant): {"transactions":[],"confidence":"low","clarification_needed":"Kaunsa product add karna hai? 🙏"}
+TURN 2 (assistant): {"transactions":[{"type":"sale","customer_name":"Ramesh","items":[],"total_amount":null,"amount_paid":null,"pending_amount":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kaunsa product add karna hai? 🙏"}
 TURN 3 (user): "chawal 5kg"
-TURN 4 (assistant): {"transactions":[],"confidence":"low","clarification_needed":"Chawal ka rate kya tha? Per kg batao 🙏"}
+TURN 4 (assistant): {"transactions":[{"type":"sale","customer_name":"Ramesh","items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":null,"subtotal":0}],"total_amount":null,"amount_paid":null,"pending_amount":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Chawal ka rate kya tha? Per kg batao 🙏"}
 TURN 5 (user): "40 rupye kilo"
+TURN 6 (assistant): {"transactions":[{"type":"sale","customer_name":"Ramesh","items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":40,"subtotal":200}],"total_amount":200,"amount_paid":null,"pending_amount":null,"is_credit":false,"calculated_total":200,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kitna paisa mila? Amount batao 🙏"}
+TURN 7 (user): "poora diya"
 OUTPUT:
 {"transactions":[{"type":"sale","customer_name":"Ramesh","total_amount":200,"amount_paid":200,"pending_amount":null,"is_credit":false,"items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":40,"subtotal":200}],"calculated_total":200,"total_matches":true,"note":"Ramesh ko 5kg chawal Rs200, full payment"}],"confidence":"high","clarification_needed":null}
 
-EXAMPLE 4b — Sale with customer+product but no amount → ask amount
-TURN 1 (user): "Ramesh ko aata diya"
-TURN 2 (assistant): {"transactions":[],"confidence":"low","clarification_needed":"Kaunsa product add karna hai? 🙏"}
-TURN 3 (user): "aata 2kg"
-TURN 4 (assistant): {"transactions":[],"confidence":"low","clarification_needed":"Rate kya tha? Per kg batao 🙏"}
-TURN 5 (user): "35 rupye"
-OUTPUT:
-{"transactions":[{"type":"sale","customer_name":"Ramesh","total_amount":70,"amount_paid":70,"pending_amount":null,"is_credit":false,"items":[{"name":"aata","quantity":2,"unit":"kg","rate_per_unit":35,"subtotal":70}],"calculated_total":70,"total_matches":true,"note":"Ramesh ko 2kg aata Rs70, full payment"}],"confidence":"high","clarification_needed":null}
+EXAMPLE 4b — User adds more items mid-flow (accumulated state must include all items)
+TURN 1 (user): "Rakesh ko Rice diya"
+TURN 2 (assistant): {"transactions":[{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"rate_per_unit":null,"subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Rice ka rate aur quantity batao 🙏"}
+TURN 3 (user): "Dal aur Sabun bhi sath le gya — Dal 60rs per kg, Sabun 50rs"
+OUTPUT (add Dal+Sabun to existing items, keep Rakesh, still need Rice rate+qty and amount):
+{"transactions":[{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"rate_per_unit":null,"subtotal":0},{"name":"Dal","quantity":null,"unit":"kg","rate_per_unit":60,"subtotal":0},{"name":"Sabun","quantity":null,"rate_per_unit":50,"subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Rice ki quantity aur rate batao. Dal aur Sabun ki quantity bhi batao 🙏"}
 
 EXAMPLE 5 — Pronoun follow-up (usne = same customer from recent context)
 TURN 1 (user): "Ramesh ne 500 diya"
@@ -440,6 +463,7 @@ STRICT RULES — READ ALL CAREFULLY
 6.  items[] = [] ONLY for payment/expense/query. For SALE: items[] MUST be non-empty.
 7.  One name = one customer (Raju / Raju bhai / raju = same person).
 8.  NEVER ask the same question again if user already answered it in this conversation.
+    When clarification_needed, include PARTIAL transaction state in transactions[] (see PARTIAL STATE ACCUMULATION above).
 9.  purchase and expense NEVER need customer_name — always set null.
 10. Follow-up pronouns (usne/wo/woh/iska/uska/unka) → infer customer from recent context.
 11. total_amount MUST be a positive number for real transactions (never null or 0).
@@ -559,27 +583,30 @@ def _build_messages(
     messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
 
     if pending_clarification:
-        # Include older history FIRST so multi-turn chains retain full context.
-        # Example: Turn1=customer name given, Turn2=bot asks product, Turn3=product given.
-        # Without older history, Turn3 loses the customer name from Turn1.
+        # Include ALL older history so multi-turn chains retain full context.
+        # e.g. Turn1=name, Turn2=product, Turn3=rate, Turn4=amount — each turn
+        # must see every prior answer; truncating causes the AI to re-ask answered questions.
         if history and len(history) > 2:
-            older = history[:-2]  # everything before the pending exchange
-            messages.extend(older[-6:])
-        # Then append the specific pending exchange: original msg → question → answer.
+            older = history[:-2]  # everything before the last pending-clarification pair
+            messages.extend(older)  # include ALL — do not truncate
+        # Replay the last pending exchange using the ACTUAL AI response (not a fake empty one).
+        # Using {"transactions": []} would erase partial state accumulated by the AI up to that
+        # point (e.g. customer_name already resolved), causing it to ask again.
         messages.append({"role": "user", "content": pending_clarification["previous_user_message"]})
+        full_ai_response = pending_clarification.get("full_ai_response") or {
+            "transactions": [],
+            "confidence": "low",
+            "clarification_needed": pending_clarification["assistant_question"],
+        }
         messages.append({
             "role": "assistant",
-            "content": json.dumps({
-                "transactions": [],
-                "confidence": "low",
-                "clarification_needed": pending_clarification["assistant_question"],
-            }),
+            "content": json.dumps(full_ai_response),
         })
         messages.append({"role": "user", "content": clean})
     elif history:
         # Include recent history so the AI can infer customer from context
         # (e.g. pronoun follow-ups like "usne 200 aur diya" after a confirmed customer).
-        messages.extend(history[-6:])
+        messages.extend(history[-12:])
         messages.append({"role": "user", "content": clean})
     else:
         messages.append({"role": "user", "content": clean})
