@@ -309,6 +309,10 @@ async def get_transaction_detail(
         )
 
     current_customer_pending = float(tx.customer.pending) if tx.customer else 0.0
+    tx_total = float(tx.amount)
+    # Transaction-level pending: what was NOT paid at recording time.
+    tx_pending = float(tx.pending_amount) if tx.pending_amount is not None else (tx_total if tx.is_credit else 0.0)
+    tx_paid = max(tx_total - tx_pending, 0.0)
 
     return TransactionDetailResponse(
         id=tx.id,
@@ -316,8 +320,9 @@ async def get_transaction_detail(
         subtitle=_detail_subtitle(tx),
         image_url="",
         description=_detail_description(tx),
-        amount=float(tx.amount),
-        pending_amount=current_customer_pending,
+        amount=tx_total,
+        amount_paid=tx_paid,
+        pending_amount=tx_pending,
         customer_pending=current_customer_pending,
         is_credit=tx.is_credit,
         customer_name=tx.customer.name if tx.customer else None,

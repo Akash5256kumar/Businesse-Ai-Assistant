@@ -67,12 +67,13 @@ class TransactionDetailResponse(BaseModel):
     subtitle: str
     image_url: str = ""
     description: str
-    amount: float           # tx.amount — the agreed total (source of truth)
-    pending_amount: float = 0   # customer's CURRENT pending balance
+    amount: float            # tx.amount — the agreed total (source of truth)
+    amount_paid: float = 0   # amount collected at the time of this transaction
+    pending_amount: float = 0  # this transaction's unpaid balance (amount - amount_paid)
     is_credit: bool = False
     customer_name: str | None = None
     customer_phone: str | None = None
-    customer_pending: float = 0  # same as pending_amount, explicit alias for Flutter
+    customer_pending: float = 0  # customer's total current outstanding balance
     items: list[InvoiceItemSchema] = []
     created_at: datetime
     type: str
