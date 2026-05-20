@@ -35,9 +35,34 @@ def _norm_unit(unit: str) -> str:
     return _UNIT_ALIASES.get(u, u)
 
 
-def _fuzzy_match(query: str, candidate: str) -> bool:
+def _match_score(query: str, candidate: str) -> float:
+    """Return a [0, 1] similarity score. 1.0 = exact match."""
     q, c = _norm_product(query), _norm_product(candidate)
-    return q == c or q in c or c in q
+    if q == c:
+        return 1.0
+    q_words = set(q.split())
+    c_words = set(c.split())
+    if q_words == c_words:
+        return 0.95
+    # All query words present in candidate and query is ≥ 60% as long as candidate
+    if q_words.issubset(c_words) and len(q) >= len(c) * 0.6:
+        return 0.85
+    # Candidate words all present in query (e.g. query "basmati rice 1kg" ↔ "basmati rice")
+    if c_words.issubset(q_words):
+        return 0.8
+    # Single-word query: the word appears as a standalone word in candidate
+    if len(q_words) == 1 and q in c_words:
+        return 0.7
+    # Common words exist (weak)
+    common = q_words & c_words
+    if common:
+        return 0.3 * len(common) / max(len(q_words), len(c_words))
+    return 0.0
+
+
+def _fuzzy_match(query: str, candidate: str) -> bool:
+    """Legacy helper — kept for adjust_stock where a single best-match is acceptable."""
+    return _match_score(query, candidate) >= 0.7
 
 
 # ── Public DB functions (called by AI tool executor) ─────────────────────────
@@ -48,19 +73,37 @@ async def get_stock(db: AsyncSession, user_id: int, product_name: str) -> dict:
     )
     all_items = result.scalars().all()
 
-    matches = [i for i in all_items if _fuzzy_match(product_name, i.product_name)]
-    if not matches:
+    scored = sorted(
+        [(i, _match_score(product_name, i.product_name)) for i in all_items],
+        key=lambda x: x[1], reverse=True,
+    )
+    # Keep only candidates with score >= 0.7
+    candidates = [(i, s) for i, s in scored if s >= 0.7]
+
+    if not candidates:
         return {"found": False, "product_name": product_name, "message": f"'{product_name}' inventory mein nahi mila"}
 
-    item = matches[0]
+    # Exact or near-exact single match → return directly
+    if len(candidates) == 1 or candidates[0][1] >= 0.95:
+        item = candidates[0][0]
+        return {
+            "found": True,
+            "product_name": item.product_name,
+            "quantity": float(item.quantity),
+            "unit": item.unit,
+            "last_purchase_price": float(item.last_purchase_price) if item.last_purchase_price else None,
+            "last_sale_price": float(item.last_sale_price) if item.last_sale_price else None,
+            "updated_at": item.updated_at.strftime("%Y-%m-%d %H:%M") if item.updated_at else None,
+        }
+
+    # Multiple matches — return all names so AI can ask the user
+    names = [i.product_name for i, _ in candidates[:5]]
     return {
-        "found": True,
-        "product_name": item.product_name,
-        "quantity": float(item.quantity),
-        "unit": item.unit,
-        "last_purchase_price": float(item.last_purchase_price) if item.last_purchase_price else None,
-        "last_sale_price": float(item.last_sale_price) if item.last_sale_price else None,
-        "updated_at": item.updated_at.strftime("%Y-%m-%d %H:%M") if item.updated_at else None,
+        "found": False,
+        "ambiguous": True,
+        "product_name": product_name,
+        "candidates": names,
+        "message": f"Multiple products found for '{product_name}': {', '.join(names)}. Please clarify which one.",
     }
 
 
@@ -89,25 +132,77 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
         select(Transaction)
         .where(Transaction.user_id == user_id, Transaction.type.in_(["sale", "purchase"]))
         .order_by(Transaction.created_at.desc())
-        .limit(50)
+        .limit(100)
     )
     txs = result.scalars().all()
 
+    # Collect all distinct matches with their best score
+    seen: dict[str, tuple[float, dict]] = {}  # product_name → (score, data)
     for tx in txs:
         for item in tx.items or []:
-            if isinstance(item, dict) and _fuzzy_match(product_name, item.get("name", "")):
-                rate = item.get("rate_per_unit")
-                if rate:
-                    return {
-                        "found": True,
-                        "product_name": item["name"],
-                        "rate": float(rate),
-                        "unit": item.get("unit", ""),
-                        "transaction_type": tx.type,
-                        "date": tx.created_at.strftime("%Y-%m-%d"),
-                    }
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name", "")
+            rate = item.get("rate_per_unit")
+            if not name or not rate:
+                continue
+            score = _match_score(product_name, name)
+            if score < 0.7:
+                continue
+            key = _norm_product(name)
+            if key not in seen or score > seen[key][0]:
+                seen[key] = (score, {
+                    "found": True,
+                    "product_name": name,
+                    "rate": float(rate),
+                    "unit": item.get("unit", ""),
+                    "transaction_type": tx.type,
+                    "date": tx.created_at.strftime("%Y-%m-%d"),
+                    "score": score,
+                })
 
-    return {"found": False, "product_name": product_name, "message": f"'{product_name}' ka koi recent price nahi mila"}
+    if not seen:
+        return {"found": False, "product_name": product_name, "message": f"'{product_name}' ka koi recent price nahi mila"}
+
+    best = max(seen.values(), key=lambda x: x[0])
+    best_score, best_data = best
+
+    # Exact or near-exact single match
+    high_conf = [v for s, v in seen.values() if s >= 0.85]
+    if len(high_conf) == 1 or best_score >= 0.95:
+        return best_data
+
+    # Multiple similar products → return candidates list
+    candidates = sorted(seen.values(), key=lambda x: x[0], reverse=True)
+    names = [v["product_name"] for _, v in candidates[:5]]
+    return {
+        "found": False,
+        "ambiguous": True,
+        "product_name": product_name,
+        "candidates": names,
+        "message": f"Multiple products found for '{product_name}': {', '.join(names)}. Please clarify which one.",
+    }
+
+
+async def search_inventory(db: AsyncSession, user_id: int, query: str) -> list[InventoryItemResponse]:
+    """Returns inventory items whose name contains the query string (case-insensitive)."""
+    norm_q = _norm_product(query)
+    result = await db.execute(
+        select(Inventory).where(Inventory.user_id == user_id).order_by(Inventory.product_name)
+    )
+    items = result.scalars().all()
+    matched = [i for i in items if norm_q in _norm_product(i.product_name)]
+    return [
+        InventoryItemResponse(
+            id=i.id,
+            product_name=i.product_name,
+            quantity=float(i.quantity),
+            unit=i.unit,
+            last_purchase_price=float(i.last_purchase_price) if i.last_purchase_price else None,
+            last_sale_price=float(i.last_sale_price) if i.last_sale_price else None,
+        )
+        for i in matched
+    ]
 
 
 # ── Stock update (called from transaction_service) ───────────────────────────
@@ -186,6 +281,8 @@ async def upsert_inventory(
         existing.unit = _norm_unit(payload.unit)
         if payload.last_purchase_price is not None:
             existing.last_purchase_price = Decimal(str(payload.last_purchase_price))
+        if payload.last_sale_price is not None:
+            existing.last_sale_price = Decimal(str(payload.last_sale_price))
         await db.flush()
         item = existing
     else:
@@ -195,6 +292,7 @@ async def upsert_inventory(
             quantity=Decimal(str(payload.quantity)),
             unit=_norm_unit(payload.unit),
             last_purchase_price=Decimal(str(payload.last_purchase_price)) if payload.last_purchase_price else None,
+            last_sale_price=Decimal(str(payload.last_sale_price)) if payload.last_sale_price else None,
         )
         db.add(item)
         await db.flush()

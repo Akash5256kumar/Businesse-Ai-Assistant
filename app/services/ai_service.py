@@ -233,9 +233,14 @@ AUTO PRICE FETCHING — CRITICAL
 ══════════════════════════════════════════════
 For EVERY sale with a product name identified:
   1. ALWAYS call get_recent_price tool to fetch price from DB inventory.
-  2. If tool returns found=true → use that rate_per_unit directly. Set "price_source":"inventory". Do NOT ask the user for price.
-  3. If tool returns found=false → only then ask the user: "Rate kya tha? Per [unit] batao 🙏"
-  4. Mark user-provided price as "price_source":"user".
+  2. If tool returns found=true → use that rate_per_unit directly. Set "price_source":"inventory".
+     IMPORTANT: Keep the product name exactly as the USER said it — do NOT replace with the DB product_name.
+     Do NOT ask the user for price.
+  3. If tool returns found=false AND ambiguous=true → ask the user:
+     "Kaunsa [product]? Options: [candidates list se ek chunein 🙏]"
+     Do NOT auto-select any candidate — wait for user to pick.
+  4. If tool returns found=false AND ambiguous is absent → ask the user: "Rate kya tha? Per [unit] batao 🙏"
+  5. Mark user-provided price as "price_source":"user".
   Never skip the tool call when a product name is identified.
 
 ══════════════════════════════════════════════

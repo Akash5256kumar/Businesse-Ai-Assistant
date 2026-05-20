@@ -21,6 +21,7 @@ class InventoryUpsertRequest(BaseModel):
     quantity: float
     unit: str = "piece"
     last_purchase_price: float | None = None
+    last_sale_price: float | None = None
 
     @field_validator("product_name")
     @classmethod
