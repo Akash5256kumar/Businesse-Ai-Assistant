@@ -324,8 +324,12 @@ ONLY use transactions: [] when you have ZERO transaction info (e.g. bare "Sale e
 EXAMPLES of partial state:
   After user gives customer name (still need product):
     transactions: [{"type":"sale","customer_name":"Rakesh","items":[],"total_amount":null,"amount_paid":null,...}]
-  After user gives product too (still need rate/amount):
-    transactions: [{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"rate_per_unit":null,"subtotal":0}],...}]
+  After user gives product names but no quantities or rates:
+    transactions: [{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"unit":null,"rate_per_unit":null,"subtotal":0},{"name":"Daal","quantity":null,"unit":null,"rate_per_unit":null,"subtotal":0}],"total_amount":null,"amount_paid":null,...}]
+  After DB fetch found rates but quantities still missing:
+    transactions: [{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"unit":"kg","rate_per_unit":50,"price_source":"inventory","subtotal":0},{"name":"Daal","quantity":null,"unit":"kg","rate_per_unit":80,"price_source":"inventory","subtotal":0}],"total_amount":null,"amount_paid":null,...}]
+  After quantities given (still need amount_paid):
+    transactions: [{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":2,"unit":"kg","rate_per_unit":50,"subtotal":100},{"name":"Daal","quantity":5,"unit":"kg","rate_per_unit":80,"subtotal":400}],"total_amount":500,"amount_paid":null,...}]
   After user gives rate but not amount_paid:
     transactions: [{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":2,"unit":"kg","rate_per_unit":50,"subtotal":100}],"total_amount":100,"amount_paid":null,...}]
 
@@ -333,6 +337,10 @@ EXAMPLES of partial state:
 FIELD RULES
 ══════════════════════════════════════════════
 - items[]          : MUST be non-empty with product names for "sale"; [] for payment/expense/query/purchase-without-items
+- items[].quantity : MANDATORY for every sale item — MUST be a positive number. Set null only while waiting for user to provide it; a sale with any null quantity CANNOT be confirmed.
+- items[].unit     : kg/litre/piece/dozen/packet/box/meter/null
+- items[].rate_per_unit : price per unit — try DB fetch before asking user
+- items[].subtotal : ALWAYS calculate = quantity × rate_per_unit (0 if either is null)
 - calculated_total : YOUR calculation (sum of subtotals; equals total_amount if no items)
 - total_matches    : true if user total == calculated_total
 - amount_paid      : what was actually paid right now
@@ -341,12 +349,25 @@ FIELD RULES
 - total_amount     : MUST be a positive number, never null or 0 for a real transaction
 
 ══════════════════════════════════════════════
-CLARIFICATION PRIORITY (ask ONE at a time, in order)
+CLARIFICATION PRIORITY (ask in order — combine related gaps into one question)
 ══════════════════════════════════════════════
-For SALE (STRICT — all 3 are mandatory before recording):
+For SALE (STRICT — ALL 4 are mandatory before recording):
   Step 1 — customer_name missing AND not inferable → ask customer name FIRST
   Step 2 — product/item name missing OR items[] is empty → ask "Kaunsa product add karna hai? 🙏" (MANDATORY)
-  Step 3 — amount/rate missing → ask amount or rate
+  Step 3 — quantity missing for ANY item → ask quantity for those items
+             Example: "Kitna diya? Rice, daal, paneer ki quantity batao (kg/litre/piece) 🙏"
+             If rate is ALSO unknown for those same items → ask rate AND quantity together:
+             Example: "Rice ki quantity aur rate batao. Daal aur paneer ki bhi quantity batao 🙏"
+  Step 4 — rate_per_unit missing for ANY item → call get_recent_price tool FIRST.
+             Only ask rate if tool returns found=false.
+  Step 5 — amount_paid missing → ask "Kitna paisa mila? Amount batao 🙏"
+
+QUANTITY RULES — MANDATORY:
+  • quantity MUST be a positive number for every item in a sale.
+  • NEVER record a sale item with quantity=null or quantity=0.
+  • If user gives product names but no quantities → set quantity: null and ask.
+  • quantity and rate can be asked TOGETHER in one message to save turns.
+  • Once quantity is known, calculate subtotal = quantity × rate_per_unit.
 
 For PAYMENT / QUERY:
   Step 1 — customer_name missing → ask name
@@ -360,6 +381,7 @@ For PURCHASE / EXPENSE:
   • If items[] is empty for a sale → set clarification_needed: "Kaunsa product add karna hai? 🙏"
   • NEVER output a sale transaction with items: [] — this is invalid.
   • items[] must have at least one entry with a real product name for every sale.
+  • Every item MUST have quantity > 0 before the transaction can be confirmed.
 
 NEVER ask for product before customer name on a sale.
 NEVER ask for something already answered in this conversation.
@@ -415,17 +437,20 @@ TURN 7 (user): "poora diya"
 OUTPUT:
 {"transactions":[{"type":"sale","customer_name":"Ramesh","total_amount":200,"amount_paid":200,"pending_amount":null,"is_credit":false,"items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":40,"subtotal":200}],"calculated_total":200,"total_matches":true,"note":"Ramesh ko 5kg chawal Rs200, full payment"}],"confidence":"high","clarification_needed":null}
 
-EXAMPLE 4c — User says "fetch from DB" when rates are unknown (NEVER re-ask — call tools)
+EXAMPLE 4c — DB fetches rates; bot then asks quantity (the correct flow)
 TURN 1 (user): "Rakesh ko Rice daal paneer colddrink diya"
-TURN 2 (assistant): [calls get_recent_price("Rice"), get_recent_price("daal"), get_recent_price("paneer"), get_recent_price("colddrink") simultaneously]
-  Suppose DB returns: Rice=50/kg, daal=80/kg, paneer=not found, colddrink=not found
-TURN 2 OUTPUT:
-{"transactions":[{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"unit":"kg","rate_per_unit":50,"price_source":"inventory","subtotal":0},{"name":"daal","quantity":null,"unit":"kg","rate_per_unit":80,"price_source":"inventory","subtotal":0},{"name":"paneer","quantity":null,"unit":null,"rate_per_unit":null,"subtotal":0},{"name":"colddrink","quantity":null,"unit":null,"rate_per_unit":null,"subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Paneer aur colddrink ka rate nahi mila. Quantity bhi batao sabka. Paneer aur colddrink ka rate kya tha? 🙏"}
+→ AI calls get_recent_price for all 4 products simultaneously.
+  Suppose DB returns: Rice=50/kg✓, daal=80/kg✓, paneer=not found✗, colddrink=not found✗
+TURN 1 OUTPUT:
+{"transactions":[{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"unit":"kg","rate_per_unit":50,"price_source":"inventory","subtotal":0},{"name":"daal","quantity":null,"unit":"kg","rate_per_unit":80,"price_source":"inventory","subtotal":0},{"name":"paneer","quantity":null,"unit":null,"rate_per_unit":null,"subtotal":0},{"name":"colddrink","quantity":null,"unit":null,"rate_per_unit":null,"subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Rice aur daal ka rate DB se mila ✓\nSabki quantity batao. Paneer aur colddrink ka rate bhi batao 🙏"}
 
-TURN 3 (user): "Mujhe nhi pata db se fetch karo" (or "I don't know, check DB")
-→ AI MUST call get_recent_price again for paneer and colddrink (user is explicitly asking DB lookup)
+TURN 2 (user): "Mujhe nhi pata db se fetch karo" (or "I don't know, check DB")
+→ AI MUST call get_recent_price again for paneer and colddrink.
 → If still not found, ONLY THEN ask for those specific rates.
 → NEVER respond to "db se fetch karo" by asking for rates without calling the tool first.
+
+TURN 2 (user alternative): "5kg rice, 3kg daal, 1kg paneer, 6 piece colddrink — paneer 200/kg, colddrink 50/piece"
+→ quantities and remaining rates all provided → calculate subtotals, ask only amount_paid.
 
 EXAMPLE 4b — User adds more items mid-flow (accumulated state must include all items)
 TURN 1 (user): "Rakesh ko Rice diya"
@@ -485,6 +510,9 @@ STRICT RULES — READ ALL CAREFULLY
 4.  "baaki/baki/udhar" = pending on the sale, NOT a separate payment transaction.
 5.  "X hi diya" or "sirf X diya" means amount_paid=X, pending = total - X.
 6.  items[] = [] ONLY for payment/expense/query. For SALE: items[] MUST be non-empty.
+6b. Every sale item MUST have quantity > 0 before the transaction can be confirmed.
+    quantity=null is only acceptable while collecting data. NEVER finalize with null quantity.
+    If only product names are given (no quantities), set quantity: null and ask immediately.
 7.  One name = one customer (Raju / Raju bhai / raju = same person).
 8.  NEVER ask the same question again if user already answered it in this conversation.
     When clarification_needed, include PARTIAL transaction state in transactions[] (see PARTIAL STATE ACCUMULATION above).
