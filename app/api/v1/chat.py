@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
@@ -8,6 +8,7 @@ from app.core.database import get_db
 from app.models.user import User
 from app.schemas.chat import ChatRequest, ChatResponse, ConfirmTransactionRequest, CustomerConfirmRequest
 from app.services.chat_service import confirm_customer, confirm_transaction, handle_message
+from app.services.transcription_service import transcribe_audio
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
 
@@ -26,6 +27,15 @@ async def chat(
         script=payload.script,
         lang_hint=payload.lang_hint,
     )
+
+
+@router.post("/transcribe/", response_model=dict)
+async def transcribe(
+    audio: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    text = await transcribe_audio(audio)
+    return {"text": text}
 
 
 @router.post("/confirm-customer/", response_model=ChatResponse)

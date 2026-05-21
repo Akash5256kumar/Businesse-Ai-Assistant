@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     # Groq
     groq_api_key: str = ""
 
+    # ElevenLabs
+    elevenlabs_api_key: str = ""
+
     # MuRIL NLP
     muril_enabled: bool = True
     muril_model_name: str = "google/muril-base-cased"
