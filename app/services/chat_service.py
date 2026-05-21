@@ -381,21 +381,6 @@ async def handle_message(
         await _log(db, user_id, raw_message, None, reply)
         return ChatResponse(reply=reply, muril_analysis=muril_response)
 
-    # ── Out-of-scope: friendly refusal, never stored as pending clarification ────
-    if parsed.get("out_of_scope"):
-        oos_reply = parsed.get("reply") or (
-            "Yeh meri expertise se bahar hai! Main sirf aapki dukaan ke kaam aa sakta "
-            "hoon — jaise sales, udhaar, stock, ya daily hisaab. "
-            "Koi dukaan se related sawaal ho toh zaroor puchiye! 🙏"
-        )
-        # Log without clarification_needed so the next message starts fresh
-        await _log(db, user_id, raw_message, {**parsed, "clarification_needed": None}, oos_reply)
-        return ChatResponse(
-            reply=oos_reply,
-            confidence="high",
-            muril_analysis=muril_response,
-        )
-
     clarification = parsed.get("clarification_needed")
     if clarification:
         await _log(db, user_id, raw_message, parsed, clarification)
