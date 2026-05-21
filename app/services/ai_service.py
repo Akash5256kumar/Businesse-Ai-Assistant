@@ -163,7 +163,7 @@ Return ONLY valid JSON. No explanation, no markdown, no extra text outside JSON.
 ══════════════════════════════════════════════
 TRANSACTION TYPES
 ══════════════════════════════════════════════
-sale      → customer ko maal diya, becha, supply kiya, de diya (goods given to customer)
+sale      → customer ko maal diya, becha, supply kiya, de diya (goods givens to customer)
 payment   → customer ne paisa diya, payment ki, clear kiya, wapas kiya (customer paid shopkeeper)
 purchase  → shopkeeper ne stock/maal kharida, supplier se liya/mangaya
 expense   → rent, bijli, labour, transport, petrol, maintenance, salary — shopkeeper ka kharch
