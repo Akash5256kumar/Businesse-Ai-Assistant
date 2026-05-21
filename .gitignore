@@ -47,3 +47,6 @@ models/
 # Optional: ignore local secrets and service files
 secrets.yml
 credentials.json
+
+# Docker compose (contains server passwords — manage on server directly)
+docker-compose.yml
