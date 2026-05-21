@@ -88,6 +88,7 @@ from app.models.otp_code import OTPCode
 from app.models.customer import Customer
 from app.models.transaction import Transaction
 from app.models.message_log import MessageLog
+from app.models.inventory import Inventory
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
