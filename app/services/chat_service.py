@@ -146,7 +146,12 @@ def _candidate_list(
 # ── Draft helpers ─────────────────────────────────────────────────────────────
 
 def _is_complete_sale(tx: dict) -> bool:
-    """True when all required fields for a sale are present and a draft can be shown."""
+    """True when enough fields are present to show a reviewable draft card.
+
+    rate_per_unit is intentionally NOT required — user can edit rates in the
+    draft card before confirming. Blocking on missing rates creates unnecessary
+    friction for shopkeepers.
+    """
     if tx.get("type") != "sale":
         return False
     if not tx.get("customer_name"):
@@ -156,12 +161,12 @@ def _is_complete_sale(tx: dict) -> bool:
         return False
     if tx.get("amount_paid") is None:
         return False
+    if not tx.get("total_amount"):
+        return False
     for item in items:
         if not item.get("name"):
             return False
         if item.get("quantity") is None:
-            return False
-        if item.get("rate_per_unit") is None:
             return False
     return True
 
@@ -380,6 +385,29 @@ async def handle_message(
         reply = "Samajh nahi aaya, thoda clear likhiye 🙏"
         await _log(db, user_id, raw_message, None, reply)
         return ChatResponse(reply=reply, muril_analysis=muril_response)
+
+    # ── Conversational (greetings, small talk) ────────────────────────────────
+    if parsed.get("conversational"):
+        conv_reply = parsed.get("reply") or "Theek hai! Koi dukaan se related kaam ho toh batao 🙏"
+        if pending_clarification:
+            # Preserve the pending transaction state so the next message still
+            # sees it — log with the original full_ai_response carried forward.
+            pending_q = pending_clarification.get("assistant_question", "")
+            if pending_q:
+                conv_reply = f"{conv_reply}\n\n({pending_q})"
+            await _log(db, user_id, raw_message, pending_clarification.get("full_ai_response"), conv_reply)
+        else:
+            await _log(db, user_id, raw_message, {**parsed, "clarification_needed": None}, conv_reply)
+        return ChatResponse(reply=conv_reply, confidence="high", muril_analysis=muril_response)
+
+    # ── Out of scope (genuinely unrelated topics) ─────────────────────────────
+    if parsed.get("out_of_scope"):
+        oos_reply = parsed.get("reply") or (
+            "Yeh meri expertise se bahar hai! Main sirf aapki dukaan ke kaam aa sakta hoon "
+            "— jaise sales, udhaar, stock, ya daily hisaab. Koi dukaan se related sawaal ho toh zaroor puchiye! 🙏"
+        )
+        await _log(db, user_id, raw_message, {**parsed, "clarification_needed": None}, oos_reply)
+        return ChatResponse(reply=oos_reply, confidence="high", muril_analysis=muril_response)
 
     clarification = parsed.get("clarification_needed")
     if clarification:
