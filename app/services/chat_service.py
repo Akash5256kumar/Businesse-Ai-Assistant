@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -29,6 +30,33 @@ _logger = logging.getLogger(__name__)
 
 _VALID_TYPES = {"sale", "payment", "purchase", "expense", "query"}
 _HISTORY_LIMIT = 12
+
+# ── Greeting detection ────────────────────────────────────────────────────────
+
+_GREETING_RE = re.compile(
+    r"^\s*(hi+|hello+|hey+|helo|namaste|namaskar|sat\s*sri\s*akal|"
+    r"kya\s+haal\s*(hai)?|kaise\s+ho|kya\s+chal\s*(raha)?|sab\s+theek|"
+    r"good\s+(morning|evening|night|afternoon)|"
+    r"thanks?|thank\s+you|dhanyavaad|shukriya|aap\s+kaise)\W*$",
+    re.IGNORECASE,
+)
+
+
+def _greeting_reply(msg: str) -> str:
+    lower = msg.lower().strip()
+    if any(w in lower for w in ["namaste", "namaskar"]):
+        return "Namaste! Aaj main aapki kya madad kar sakta hoon?\nSale entry, payment, ya kuch aur?"
+    if any(w in lower for w in ["shukriya", "dhanyavaad"]):
+        return "Aapka swagat hai! Koi aur kaam ho toh batao."
+    if any(w in lower for w in ["thanks", "thank you"]):
+        return "You're welcome! Let me know if you need anything else."
+    if "good morning" in lower:
+        return "Good morning! Aaj ka din accha rahe. Kaise madad kar sakta hoon?"
+    if any(w in lower for w in ["good evening", "good night"]):
+        return "Good evening! Kaise madad kar sakta hoon aapki?"
+    if any(w in lower for w in ["kaise ho", "sab theek", "kya haal", "kya chal"]):
+        return "Sab theek hai, shukriya! Batao, aaj kya kaam karna hai?"
+    return "Hello! Kaise madad kar sakta hoon? Sale entry, payment, ya kuch aur?"
 
 
 # ── Helper builders ───────────────────────────────────────────────────────────
@@ -212,14 +240,14 @@ async def _process_tx(
     tx_type = tx.get("type", "").lower()
 
     if tx_type not in _VALID_TYPES:
-        msg = "Thoda clear likhiye 🙏"
+        msg = "Thoda clear likhiye"
         return msg, TransactionDetail(type=tx_type or "unknown", status="error", message=msg), None
 
     # ── Query ─────────────────────────────────────────────────────────────────
     if tx_type == "query":
         customer_name = tx.get("customer_name")
         if not customer_name:
-            msg = "Kis customer ka hisaab chahiye? Naam likhiye 🙏"
+            msg = "Kis customer ka hisaab chahiye? Naam likhiye"
             return msg, TransactionDetail(type="query", status="error", message=msg), None
 
         customer = await customer_service.get_or_create(db, user_id, customer_name)
@@ -238,7 +266,7 @@ async def _process_tx(
         if amount < 0:
             raise ValueError
     except (ValueError, Exception):
-        msg = "Amount sahi likhiye 🙏"
+        msg = "Amount sahi likhiye"
         return msg, TransactionDetail(type=tx_type, status="error", message=msg), None
 
     raw_items: list = tx.get("items", [])
@@ -272,14 +300,14 @@ async def _process_tx(
     if tx_type == "sale":
         has_product = any(item.get("name", "").strip() for item in raw_items)
         if not has_product:
-            q = "Kaunsa product add karna hai? 🙏"
+            q = "Kaunsa product add karna hai?"
             return None, None, ChatResponse(reply=q, clarification_needed=q)
 
         # ── Complete sale → show summary draft before recording ────────────────
         if _is_complete_sale(tx):
             draft = _build_transaction_draft(tx)
             return None, None, ChatResponse(
-                reply="✅ Transaction ready hai — neeche review karo aur confirm karo 👇",
+                reply="✅ Transaction ready hai — neeche review karo aur confirm karo ",
                 transaction_draft=draft,
                 pending_transaction=tx,
             )
@@ -287,13 +315,13 @@ async def _process_tx(
         # Guard: items collected but amount_paid still unknown → ask before
         # proceeding to customer lookup, which would trigger a premature flow.
         if tx.get("amount_paid") is None:
-            q = "Kitna paisa mila? Amount batao 🙏"
+            q = "Kitna paisa mila? Amount batao"
             return None, None, ChatResponse(reply=q, clarification_needed=q)
 
     # ── Sale / Payment — need customer ────────────────────────────────────────
     customer_name: str | None = tx.get("customer_name")
     if not customer_name:
-        msg = "Customer ka naam likhiye 🙏"
+        msg = "Customer ka naam likhiye"
         return msg, TransactionDetail(type=tx_type, status="error", message=msg), None
 
     # MuRIL-enhanced search returns (Customer, score) tuples
@@ -315,9 +343,9 @@ async def _process_tx(
 
     # Multiple matches (or single) — always show selection; never auto-confirm
     reply_text = (
-        f"'{customer_name}' naam ke {len(candidate_objs)} customer hain — sahi wala select karo 👇"
+        f"'{customer_name}' naam ke {len(candidate_objs)} customer hain — sahi wala select karo "
         if len(candidate_objs) >= 2
-        else f"'{customer_name}' naam ka customer mila — confirm karo ya naya customer add karo 👇"
+        else f"'{customer_name}' naam ka customer mila — confirm karo ya naya customer add karo "
     )
     return None, None, ChatResponse(
         reply=reply_text,
@@ -345,6 +373,12 @@ async def handle_message(
       4. Validate + record transactions
       5. Log → respond (with muril_analysis attached)
     """
+    # ── Greeting fast-path ────────────────────────────────────────────────────
+    if _GREETING_RE.match(raw_message.strip()):
+        reply = _greeting_reply(raw_message)
+        await _log(db, user_id, raw_message, None, reply)
+        return ChatResponse(reply=reply)
+
     # ── Step 1 + 2 (concurrent) ───────────────────────────────────────────────
     history_task = asyncio.create_task(_get_recent_logs(db, user_id))
     muril_task = asyncio.create_task(
@@ -377,7 +411,7 @@ async def handle_message(
     )
 
     if parsed is None:
-        reply = "Samajh nahi aaya, thoda clear likhiye 🙏"
+        reply = "Samajh nahi aaya, thoda clear likhiye"
         await _log(db, user_id, raw_message, None, reply)
         return ChatResponse(reply=reply, muril_analysis=muril_response)
 
@@ -393,7 +427,7 @@ async def handle_message(
 
     transactions = parsed.get("transactions", [])
     if not transactions:
-        reply = "Samajh nahi aaya, thoda clear likhiye 🙏"
+        reply = "Samajh nahi aaya, thoda clear likhiye"
         await _log(db, user_id, raw_message, parsed, reply)
         return ChatResponse(reply=reply, muril_analysis=muril_response)
 
@@ -421,7 +455,7 @@ async def handle_message(
         if detail:
             tx_details.append(detail)
 
-    reply = "\n\n".join(replies) if replies else "Samajh nahi aaya, thoda clear likhiye 🙏"
+    reply = "\n\n".join(replies) if replies else "Samajh nahi aaya, thoda clear likhiye"
     await _log(db, user_id, raw_message, parsed, reply)
 
     return ChatResponse(
@@ -446,7 +480,7 @@ async def confirm_customer(
     if req.customer_id is not None:
         customer = await customer_service.get_by_id(db, req.customer_id)
         if customer is None or customer.user_id != user_id:
-            return ChatResponse(reply="Customer nahi mila. Phir se try karo 🙏")
+            return ChatResponse(reply="Customer nahi mila. Phir se try karo")
     else:
         name = (req.customer_name or tx.get("customer_name") or "Unknown").strip()
         if req.customer_phone and req.customer_phone.lower() != "skip":
@@ -464,7 +498,7 @@ async def confirm_customer(
     try:
         amount = Decimal(str(tx.get("total_amount", 0)))
     except Exception:
-        return ChatResponse(reply="Amount sahi nahi hai. Phir se try karo 🙏")
+        return ChatResponse(reply="Amount sahi nahi hai. Phir se try karo")
 
     raw_items: list = tx.get("items", [])
     note: str | None = tx.get("note")
@@ -517,7 +551,7 @@ async def confirm_customer(
             )],
         )
 
-    return ChatResponse(reply="Transaction type sahi nahi hai 🙏")
+    return ChatResponse(reply="Transaction type sahi nahi hai")
 
 
 # ── Confirm-transaction (draft summary card confirmation) ──────────────────────
@@ -545,7 +579,7 @@ async def confirm_transaction(
 
     customer_name = req.customer_name or tx.get("customer_name")
     if not customer_name:
-        return ChatResponse(reply="Customer ka naam batao 🙏")
+        return ChatResponse(reply="Customer ka naam batao")
 
     # MuRIL-enhanced customer search
     candidates_with_scores = await customer_service.search_by_name_with_muril(
@@ -573,7 +607,7 @@ async def confirm_transaction(
 
     # Multiple matches → let user pick
     reply_text = (
-        f"'{customer_name}' naam ke {len(candidate_objs)} customers hain — sahi wala select karo 👇"
+        f"'{customer_name}' naam ke {len(candidate_objs)} customers hain — sahi wala select karo "
     )
     return ChatResponse(
         reply=reply_text,
