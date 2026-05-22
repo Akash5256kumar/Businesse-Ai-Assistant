@@ -18,7 +18,7 @@ async def transcribe_audio(file: UploadFile) -> str:
         response = await client.post(
             _ELEVENLABS_STT_URL,
             headers={"xi-api-key": settings.elevenlabs_api_key},
-            files={"audio": (file.filename or "audio", audio_bytes, file.content_type or "audio/mpeg")},
+            files={"file": (file.filename or "audio", audio_bytes, file.content_type or "audio/mpeg")},
             data={"model_id": "scribe_v1"},
         )
 
