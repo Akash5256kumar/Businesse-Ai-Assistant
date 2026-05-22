@@ -174,7 +174,11 @@ def _candidate_list(
 # ── Draft helpers ─────────────────────────────────────────────────────────────
 
 def _is_complete_sale(tx: dict) -> bool:
-    """True when all required fields for a sale are present and a draft can be shown."""
+    """
+    True when a draft card can be shown.
+    rate_per_unit is intentionally NOT required — if DB has no price, the card
+    shows with null rate and the user sets it via the inline edit screen.
+    """
     if tx.get("type") != "sale":
         return False
     if not tx.get("customer_name"):
@@ -188,8 +192,6 @@ def _is_complete_sale(tx: dict) -> bool:
         if not item.get("name"):
             return False
         if item.get("quantity") is None:
-            return False
-        if item.get("rate_per_unit") is None:
             return False
     return True
 

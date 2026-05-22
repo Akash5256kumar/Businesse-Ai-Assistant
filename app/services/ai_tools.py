@@ -66,9 +66,10 @@ TOOLS: list[dict] = [
                 "Call it even when the user says 'mujhe nhi pata', 'db se fetch karo', "
                 "'check karo', 'I don't remember the price', etc. — that is an explicit instruction "
                 "to look up the price from the database. "
-                "If found=true, use the returned rate directly without asking the user. "
-                "If found=false AND ambiguous=true, ask user to pick from candidates. "
-                "If found=false AND no ambiguous, ONLY THEN ask user for that specific product's rate."
+                "If found=true → use the returned rate directly. NEVER ask user for price. "
+                "If found=false AND ambiguous=true → keep rate_per_unit: null, price_source: 'user'. "
+                "Do NOT ask user in chat — they pick from the product dropdown in the UI. "
+                "If found=false (no match) → keep rate_per_unit: null. NEVER ask user for rate."
             ),
             "parameters": {
                 "type": "object",

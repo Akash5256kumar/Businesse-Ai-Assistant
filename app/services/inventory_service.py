@@ -178,11 +178,16 @@ async def get_customer_balance(db: AsyncSession, user_id: int, customer_name: st
 async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) -> dict:
     """
     Find the best available price for a product.
+    Auto-select threshold: score >= 0.75 → confident match, use without asking.
+    Score 0.70-0.74 → ambiguous, return top-3 candidates for dropdown (never ask in chat).
     Priority:
       1. Inventory table — last_sale_price (preferred for sales), then last_purchase_price.
-         Also matches by category so "Rice" finds "Basmati Rice" whose category="rice".
       2. Past transactions — most recent rate_per_unit from sale/purchase items.
+         Tie-break by frequency (most-ordered product wins).
     """
+    _AUTO_THRESHOLD = 0.75
+    _FUZZY_THRESHOLD = 0.70
+
     # ── Source 1: Inventory table ─────────────────────────────────────────────
     inv_result = await db.execute(select(Inventory).where(Inventory.user_id == user_id))
     all_inv = inv_result.scalars().all()
@@ -191,43 +196,46 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
         [(i, _item_score(product_name, i)) for i in all_inv],
         key=lambda x: x[1], reverse=True,
     )
-    candidates_inv = [(i, s) for i, s in scored_inv if s >= 0.70]
+    candidates_inv = [(i, s) for i, s in scored_inv if s >= _FUZZY_THRESHOLD]
 
     if candidates_inv:
-        if len(candidates_inv) > 1 and candidates_inv[0][1] < 0.95:
-            names = [i.product_name for i, _ in candidates_inv[:5]]
+        best_inv, best_score = candidates_inv[0]
+        if best_score >= _AUTO_THRESHOLD:
+            # Confident match — auto-select, no clarification needed
+            price = best_inv.last_sale_price or best_inv.last_purchase_price
+            if price:
+                return {
+                    "found": True,
+                    "category": best_inv.category,
+                    "product_name": best_inv.product_name,
+                    "rate": float(price),
+                    "unit": best_inv.unit or "",
+                    "source": "inventory",
+                    "score": best_score,
+                }
+            # Inventory entry exists but no price stored — fall through to transactions
+        else:
+            # Below auto-select threshold → ambiguous; user picks from card dropdown
+            names = [i.product_name for i, _ in candidates_inv[:3]]
             return {
                 "found": False,
                 "ambiguous": True,
                 "product_name": product_name,
                 "candidates": names,
-                "message": f"Multiple products found for '{product_name}': {', '.join(names)}. Please clarify.",
+                "message": f"Multiple products found for '{product_name}': {', '.join(names)}.",
             }
-
-        best_inv, best_score = candidates_inv[0]
-        price = best_inv.last_sale_price or best_inv.last_purchase_price
-        if price:
-            return {
-                "found": True,
-                "category": best_inv.category,
-                "product_name": best_inv.product_name,
-                "rate": float(price),
-                "unit": best_inv.unit or "",
-                "source": "inventory",
-                "score": best_score,
-            }
-        # Inventory entry exists but no price stored — fall through to transactions
 
     # ── Source 2: Past transactions ───────────────────────────────────────────
     tx_result = await db.execute(
         select(Transaction)
         .where(Transaction.user_id == user_id, Transaction.type.in_(["sale", "purchase"]))
         .order_by(Transaction.created_at.desc())
-        .limit(100)
+        .limit(200)
     )
     txs = tx_result.scalars().all()
 
-    seen: dict[str, tuple[float, dict]] = {}
+    # Track best rate AND frequency for each normalised product name
+    seen: dict[str, tuple[float, int, dict]] = {}  # key → (score, count, data)
     for tx in txs:
         for item in tx.items or []:
             if not isinstance(item, dict):
@@ -237,11 +245,13 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
             if not name or not rate:
                 continue
             score = _match_score(product_name, name)
-            if score < 0.70:
+            if score < _FUZZY_THRESHOLD:
                 continue
             key = _norm(name)
-            if key not in seen or score > seen[key][0]:
-                seen[key] = (score, {
+            prev_score, prev_count, prev_data = seen.get(key, (0.0, 0, {}))
+            count = prev_count + 1
+            if score >= prev_score:
+                seen[key] = (score, count, {
                     "found": True,
                     "product_name": name,
                     "rate": float(rate),
@@ -251,27 +261,31 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
                     "date": tx.created_at.strftime("%Y-%m-%d"),
                     "score": score,
                 })
+            else:
+                seen[key] = (prev_score, count, prev_data)
 
     if not seen:
         return {
             "found": False,
             "product_name": product_name,
-            "message": f"'{product_name}' ka koi price inventory ya transactions mein nahi mila. User se rate poochho.",
+            "message": f"'{product_name}' ka koi price nahi mila. Rate null rakha — user edit screen mein set kar sakta hai.",
         }
 
-    best_score, best_data = max(seen.values(), key=lambda x: x[0])
-    high_conf = [v for s, v in seen.values() if s >= 0.85]
-    if len(high_conf) == 1 or best_score >= 0.95:
+    # Sort by score desc, then by frequency desc (most-ordered wins on tie)
+    ranked = sorted(seen.values(), key=lambda x: (x[0], x[1]), reverse=True)
+    best_score, best_count, best_data = ranked[0]
+
+    if best_score >= _AUTO_THRESHOLD:
         return best_data
 
-    candidates = sorted(seen.values(), key=lambda x: x[0], reverse=True)
-    names = [v["product_name"] for _, v in candidates[:5]]
+    # Best match below auto-select threshold → ambiguous
+    names = [v["product_name"] for _, _, v in ranked[:3]]
     return {
         "found": False,
         "ambiguous": True,
         "product_name": product_name,
         "candidates": names,
-        "message": f"Multiple products found for '{product_name}': {', '.join(names)}. Please clarify.",
+        "message": f"Multiple products found for '{product_name}': {', '.join(names)}.",
     }
 
 
