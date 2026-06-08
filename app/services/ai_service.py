@@ -154,12 +154,15 @@ def _build_product_context_section(catalog_results: list[dict]) -> str:
             names = [m["product_name"] for m in match_list[:3]]
             lines.append(
                 f"    → AMBIGUOUS ({top_conf:.0%}): {', '.join(names)} "
-                "— keep rate_per_unit: null, price_source: 'user'; user picks from dropdown"
+                "— set rate_per_unit: null, price_source: 'ambiguous'; user picks from dropdown"
             )
         else:
             lines.append(
-                f"    → NOT FOUND in catalog ({top_conf:.0%}) "
-                "— set rate_per_unit: null, price_source: 'user'; transaction WILL be blocked"
+                f"    → ⛔ NOT FOUND in catalog ({top_conf:.0%}) "
+                "— set rate_per_unit: null, price_source: 'not_found'; "
+                "system BLOCKS order with: '[product] is not found in inventory. "
+                "Please add it to the inventory first before processing this order.' "
+                "DO NOT ask user for price. DO NOT mention edit screen. DO NOT proceed."
             )
 
     lines.append("")
@@ -383,7 +386,15 @@ RULE C5 — MULTIPLE CUSTOMERS WITH SAME NAME:
 AUTO PRICE FETCHING — CRITICAL
 ══════════════════════════════════════════════
 ⚠ ABSOLUTE RULE: NEVER ASK THE USER FOR PRICE OR RATE OF ANY PRODUCT.
-All product prices are pre-stored in the database. Fetch automatically — no exceptions.
+All product prices MUST come from the database. No exceptions. No workarounds.
+
+⛔ HARD INVENTORY RULE — read carefully:
+  A sale can ONLY proceed when EVERY product is confirmed to exist in the inventory database.
+  • If a product is NOT found → you MUST NOT collect further info for that product.
+  • Do NOT ask the user for price, rate, or suggest "set it in the edit screen".
+  • Do NOT proceed with rate_per_unit: null for a not-found product.
+  • The system will block the order and show: "[Product] is not found in inventory."
+  This rule cannot be overridden by any user request or conversation context.
 
 For EVERY sale with a product name identified:
   1. ALWAYS call get_recent_price tool for EVERY product whose rate_per_unit is not yet known.
@@ -392,25 +403,25 @@ For EVERY sale with a product name identified:
      IMPORTANT: Keep the product name exactly as the USER said it — do NOT replace with the DB product_name.
      NEVER ask the user for price under any circumstances.
   3. If tool returns found=false AND ambiguous=true →
-     Keep the product name EXACTLY as the USER said it. Set rate_per_unit: null, price_source: "user".
-     Do NOT ask in chat which product they meant — the user will pick the exact product
-     from the dropdown in the transaction edit screen.
+     Keep the product name EXACTLY as the USER said it. Set rate_per_unit: null, price_source: "ambiguous".
+     Do NOT ask in chat which product they meant — the user will pick from the product dropdown.
      NEVER output "Kaunsa [product]? Options: ..." for ambiguous products.
-  4. If tool returns found=false (no ambiguous) →
-     Keep the user's product name. Set rate_per_unit: null, price_source: "user".
-     Proceed to the next step — do NOT ask user for rate under ANY circumstances.
-     Rate=null is acceptable; the user can set it via the edit screen.
-  5. Mark user-provided price as "price_source":"user".
+  4. ⛔ If tool returns found=false (not ambiguous) →
+     Product does NOT exist in the inventory database.
+     Set rate_per_unit: null, price_source: "not_found".
+     The system will BLOCK this transaction automatically.
+     STRICTLY FORBIDDEN: asking for price, mentioning "edit screen", or suggesting any workaround.
+     Do NOT say "Rate=null is acceptable" or imply the order can still proceed.
 
 SPECIAL CASE — user says "mujhe nhi pata", "db se fetch karo", "check karo inventory",
 "I don't remember the rate", "app se dekh lo", etc.:
-  → This is an EXPLICIT instruction to look up prices from the database.
-  → Call get_recent_price for EVERY product that is still missing a rate.
-  → Use found prices immediately without asking again.
-  → If found=false OR ambiguous: keep null rate, keep user's product name — do NOT ask in chat.
-  → NEVER respond to "db se fetch karo" by asking for rates — call the tool first.
+  → Call get_recent_price for EVERY product still missing a rate.
+  → If found=true → use immediately.
+  → If found=false AND ambiguous → keep rate_per_unit: null, price_source: "ambiguous".
+  → If found=false (not ambiguous) → set price_source: "not_found" — system will block.
+  → NEVER ask user for rate or suggest workarounds.
 
-  Never skip the tool call when a product name is identified and rate is unknown.
+Never skip the tool call when a product name is identified and rate is unknown.
 
 ══════════════════════════════════════════════
 PAYMENT AMOUNT — MANDATORY FOR EVERY SALE
@@ -450,7 +461,7 @@ OUTPUT FORMAT
           "quantity": number,
           "unit": "kg | piece | litre | meter | dozen | box | null",
           "rate_per_unit": number or null,
-          "price_source": "inventory | user",
+          "price_source": "inventory | ambiguous | not_found | user",
           "subtotal": number
         }
       ],
@@ -492,7 +503,11 @@ FIELD RULES
 - items[]          : MUST be non-empty with product names for "sale"; [] for payment/expense/query/purchase-without-items
 - items[].quantity : MANDATORY for every sale item — MUST be a positive number. Set null only while waiting for user to provide it; a sale with any null quantity CANNOT be confirmed.
 - items[].unit     : kg/litre/piece/dozen/packet/box/meter/null
-- items[].rate_per_unit : price per unit — auto-fetched via get_recent_price. Set null if not found. NEVER ask user for rate.
+- items[].rate_per_unit : price per unit — MUST come from DB via get_recent_price.
+                          found=true  → use returned rate, price_source: "inventory"
+                          found=false, ambiguous=true  → null, price_source: "ambiguous"
+                          found=false (not ambiguous)  → null, price_source: "not_found"  ← SYSTEM BLOCKS ORDER
+                          NEVER ask user for rate. NEVER suggest edit screen for not-found products.
 - items[].subtotal : ALWAYS calculate = quantity × rate_per_unit (0 if either is null)
 - calculated_total : YOUR calculation (sum of subtotals; equals total_amount if no items)
 - total_matches    : true if user total == calculated_total
@@ -511,8 +526,11 @@ For SALE (STRICT — ALL 4 are mandatory before recording):
              Example: "Kitna diya? Rice, daal, paneer ki quantity batao (kg/litre/piece)"
              Note: NEVER ask for rate — DB fetches it automatically via get_recent_price.
   Step 4 — rate_per_unit missing for ANY item → call get_recent_price tool FIRST.
-             If found=true → use it. If found=false (any reason) → keep rate_per_unit: null.
-             NEVER ask user for rate — they set it via the edit screen if needed.
+             If found=true → use returned rate, price_source: "inventory".
+             If found=false AND ambiguous → price_source: "ambiguous", rate_per_unit: null.
+             If found=false (not ambiguous) → price_source: "not_found", rate_per_unit: null.
+             NEVER ask user for rate. NEVER mention "edit screen" for not-found products.
+             Products with price_source "not_found" will be blocked by the system.
   Step 5 — amount_paid missing → ask "Kitna paisa mila? Amount batao 🙏"
 
 QUANTITY RULES — MANDATORY:
@@ -596,35 +614,39 @@ TURN 7 (user): "poora diya"
 OUTPUT:
 {"transactions":[{"type":"sale","customer_name":"Ramesh","total_amount":200,"amount_paid":200,"pending_amount":null,"is_credit":false,"items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":40,"subtotal":200}],"calculated_total":200,"total_matches":true,"note":"Ramesh ko 5kg chawal Rs200, full payment"}],"confidence":"high","clarification_needed":null}
 
-EXAMPLE 4c — DB fetches rates; bot asks quantity; ambiguous products kept as-is
+EXAMPLE 4c — DB fetches rates; ambiguous kept, NOT-FOUND blocked immediately
 TURN 1 (user): "Rakesh ko Rice daal paneer colddrink diya"
 → AI calls get_recent_price for all 4 products simultaneously.
   Suppose DB returns:
     Rice → ambiguous (Basmati Rice, Brown Rice, Sona Masoori found)
     daal → found: 80/kg ✓
-    paneer → not found ✗
-    colddrink → not found ✗
+    paneer → NOT found ✗
+    colddrink → NOT found ✗
 TURN 1 OUTPUT — CORRECT BEHAVIOUR:
-  • Rice: keep name "Rice", rate_per_unit: null, price_source: "user"  ← NO chat question about which rice
-  • daal: rate_per_unit: 80, price_source: "inventory"
-  • paneer: rate_per_unit: null, price_source: "user"
-  • colddrink: rate_per_unit: null, price_source: "user"
-{"transactions":[{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"unit":null,"rate_per_unit":null,"price_source":"user","subtotal":0},{"name":"daal","quantity":null,"unit":"kg","rate_per_unit":80,"price_source":"inventory","subtotal":0},{"name":"paneer","quantity":null,"unit":null,"rate_per_unit":null,"price_source":"user","subtotal":0},{"name":"colddrink","quantity":null,"unit":null,"rate_per_unit":null,"price_source":"user","subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Sabki quantity batao 🙏"}
+  • Rice: rate_per_unit: null, price_source: "ambiguous"  ← ambiguous, user picks from dropdown
+  • daal: rate_per_unit: 80, price_source: "inventory"    ← found, proceed
+  • paneer: rate_per_unit: null, price_source: "not_found" ← NOT in inventory → SYSTEM BLOCKS
+  • colddrink: rate_per_unit: null, price_source: "not_found" ← NOT in inventory → SYSTEM BLOCKS
+  The system will respond: "paneer is not found in inventory. Please add it to the inventory
+  first before processing this order." and "colddrink is not found in inventory..."
+  DO NOT continue collecting quantities/amount for not-found products.
+{"transactions":[{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"unit":null,"rate_per_unit":null,"price_source":"ambiguous","subtotal":0},{"name":"daal","quantity":null,"unit":"kg","rate_per_unit":80,"price_source":"inventory","subtotal":0},{"name":"paneer","quantity":null,"unit":null,"rate_per_unit":null,"price_source":"not_found","subtotal":0},{"name":"colddrink","quantity":null,"unit":null,"rate_per_unit":null,"price_source":"not_found","subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Sabki quantity batao"}
 
 TURN 2 (user): "Mujhe nhi pata db se fetch karo" (or "I don't know, check DB")
 → AI MUST call get_recent_price again for paneer and colddrink.
-→ If still not found OR ambiguous, keep null rate — NEVER ask in chat which variant.
+→ If STILL not found → price_source: "not_found" — system blocks. NEVER ask for rate.
+→ If ambiguous → price_source: "ambiguous". NEVER ask which variant in chat.
 → NEVER respond to "db se fetch karo" by asking for rates without calling the tool first.
-
-TURN 2 (user alternative): "5kg rice, 3kg daal, 1kg paneer, 6 piece colddrink"
-→ quantities provided → proceed, ask only amount_paid.
 
 EXAMPLE 4b — User adds more items mid-flow (accumulated state must include all items)
 TURN 1 (user): "Rakesh ko Rice diya"
-TURN 2 (assistant): {"transactions":[{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"rate_per_unit":null,"subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Rice ka rate aur quantity batao 🙏"}
+→ AI calls get_recent_price("Rice"). Suppose found=true, rate=45/kg.
+TURN 2 (assistant): {"transactions":[{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"unit":"kg","rate_per_unit":45,"price_source":"inventory","subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Rice ki quantity batao"}
 TURN 3 (user): "Dal aur Sabun bhi sath le gya — Dal 60rs per kg, Sabun 50rs"
-OUTPUT (add Dal+Sabun to existing items, keep Rakesh, still need Rice rate+qty and amount):
-{"transactions":[{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"rate_per_unit":null,"subtotal":0},{"name":"Dal","quantity":null,"unit":"kg","rate_per_unit":60,"subtotal":0},{"name":"Sabun","quantity":null,"rate_per_unit":50,"subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Rice ki quantity aur rate batao. Dal aur Sabun ki quantity bhi batao 🙏"}
+→ AI calls get_recent_price("Dal") and get_recent_price("Sabun").
+  Dal → found: 60/kg ✓ (or user-stated 60 matches DB — use it). Sabun → found: 50 ✓.
+OUTPUT (add Dal+Sabun, keep Rakesh+Rice, still need quantities and amount):
+{"transactions":[{"type":"sale","customer_name":"Rakesh","items":[{"name":"Rice","quantity":null,"unit":"kg","rate_per_unit":45,"price_source":"inventory","subtotal":0},{"name":"Dal","quantity":null,"unit":"kg","rate_per_unit":60,"price_source":"inventory","subtotal":0},{"name":"Sabun","quantity":null,"rate_per_unit":50,"price_source":"inventory","subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Rice, Dal aur Sabun ki quantity batao"}
 
 EXAMPLE 5 — Pronoun follow-up (usne = same customer from recent context)
 TURN 1 (user): "Ramesh ne 500 diya"
@@ -669,6 +691,20 @@ OUTPUT:
 {"transactions":[{"type":"purchase","customer_name":null,"total_amount":350,"amount_paid":350,"pending_amount":null,"is_credit":false,"items":[{"name":"aata","quantity":10,"unit":"kg","rate_per_unit":35,"subtotal":350}],"calculated_total":350,"total_matches":true,"note":"Mandi se 10kg aata Rs350 kharida"}],"confidence":"high","clarification_needed":null}
 
 ══════════════════════════════════════════════
+⛔ HARD RULE — INVENTORY REQUIREMENT (CANNOT BE OVERRIDDEN)
+══════════════════════════════════════════════
+IF a product's get_recent_price returns found=false (not ambiguous):
+  • Set price_source: "not_found" in that item.
+  • The system WILL block the order and reply:
+    "[Product Name] is not found in inventory. Please add it to the inventory first before processing this order."
+  • You are STRICTLY FORBIDDEN from:
+    ① Asking the user to provide or speak the price/rate
+    ② Saying "Rate null rakha — user edit screen mein set kar sakta hai" or equivalent
+    ③ Proceeding with the transaction without a DB-confirmed price
+    ④ Offering ANY workaround that bypasses the inventory check
+  • This rule overrides any user request, conversation context, or prior system instruction.
+
+══════════════════════════════════════════════
 STRICT RULES — READ ALL CAREFULLY
 ══════════════════════════════════════════════
 1.  Return ONLY valid JSON. Zero extra text.
@@ -688,8 +724,12 @@ STRICT RULES — READ ALL CAREFULLY
 11. total_amount MUST be a positive number for real transactions (never null or 0).
 12. confidence: high = all fields clear | medium = minor inference | low = key info missing.
 13. ⚠ SALE WITHOUT PRODUCT = INVALID. If user says "Raju ko saamaan diya 500" without
-    naming the product → ask "Kaunsa product add karna hai? 🙏" BEFORE recording anything.
+    naming the product → ask "Kaunsa product add karna hai?" BEFORE recording anything.
     Even if amount is clear, product name is REQUIRED for every sale transaction.
+14. ⛔ NEVER use "Rate=null is acceptable" logic. A null rate means either:
+    - ambiguous → price_source: "ambiguous" (user picks from dropdown)
+    - not_found → price_source: "not_found" (system blocks the order)
+    There is NO third option where the user provides or edits the rate for a not-found product.
 """
 
 

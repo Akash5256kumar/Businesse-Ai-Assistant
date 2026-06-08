@@ -175,9 +175,9 @@ def _candidate_list(
 
 def _is_complete_sale(tx: dict) -> bool:
     """
-    True when a draft card can be shown.
-    rate_per_unit is intentionally NOT required — if DB has no price, the card
-    shows with null rate and the user sets it via the inline edit screen.
+    True when enough data has been collected to trigger the inventory check + confirmation.
+    rate_per_unit is not checked here — _validate_sale_items enforces the inventory rule
+    immediately after, blocking if any product is not found in the catalog.
     """
     if tx.get("type") != "sale":
         return False
@@ -214,14 +214,31 @@ async def _validate_sale_items(
     items: list[dict],
 ) -> list[tuple[dict, str]]:
     """
-    For each sale item, check inventory catalog with ≥ 0.80 confidence threshold.
+    For each sale item, determine inventory status.
     Returns list of (item, status) where status is 'found' | 'ambiguous' | 'not_found'.
+
+    Fast-path: if the AI already marked price_source as 'not_found' or 'ambiguous',
+    trust that sentinel and skip the extra catalog DB call for that item.
+    Otherwise, verify via find_product_catalog_matches (≥ 0.80 threshold).
     """
     results: list[tuple[dict, str]] = []
     for item in items:
         name = (item.get("name") or "").strip()
         if not name:
             continue
+
+        price_source = item.get("price_source", "")
+
+        # Fast-path: trust the AI's sentinel set during get_recent_price tool call
+        if price_source == "not_found":
+            results.append((item, "not_found"))
+            continue
+        if price_source == "ambiguous":
+            results.append((item, "ambiguous"))
+            continue
+
+        # Authoritative catalog check for all other cases (including price_source "inventory"
+        # or "user" where we still need to confirm the product actually exists in DB)
         catalog = await inventory_service.find_product_catalog_matches(db, user_id, name)
         top_conf = catalog.get("top_match_confidence", 0.0)
         if top_conf >= 0.80:
@@ -380,11 +397,13 @@ async def _process_tx(
             item_statuses = await _validate_sale_items(db, user_id, raw_items)
             not_found = [item["name"] for item, status in item_statuses if status == "not_found"]
             if not_found:
-                missing_str = ", ".join(not_found)
-                msg = (
-                    f"Yeh product(s) inventory mein nahi hai: {missing_str}. "
-                    "Pehle inventory mein add karo, tab yeh order process ho sakta hai."
-                )
+                # One sentence per missing product — exact required format, cannot be changed
+                lines = [
+                    f"{name} is not found in inventory. "
+                    "Please add it to the inventory first before processing this order."
+                    for name in not_found
+                ]
+                msg = "\n".join(lines)
                 return None, None, ChatResponse(reply=msg, clarification_needed=msg)
 
             # Step 4: Show explicit order summary before any transaction is recorded

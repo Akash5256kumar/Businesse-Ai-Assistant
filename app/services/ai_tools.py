@@ -64,12 +64,16 @@ TOOLS: list[dict] = [
                 "then falls back to past transactions. "
                 "ALWAYS call this for EVERY product in a sale whose rate_per_unit is not yet known. "
                 "Call it even when the user says 'mujhe nhi pata', 'db se fetch karo', "
-                "'check karo', 'I don't remember the price', etc. — that is an explicit instruction "
-                "to look up the price from the database. "
-                "If found=true → use the returned rate directly. NEVER ask user for price. "
-                "If found=false AND ambiguous=true → keep rate_per_unit: null, price_source: 'user'. "
-                "Do NOT ask user in chat — they pick from the product dropdown in the UI. "
-                "If found=false (no match) → keep rate_per_unit: null. NEVER ask user for rate."
+                "'check karo', 'I don't remember the price', etc. "
+                "RESULT HANDLING — MANDATORY:\n"
+                "  found=true → use returned rate. Set price_source: 'inventory'. NEVER ask user for price.\n"
+                "  found=false AND ambiguous=true → rate_per_unit: null, price_source: 'ambiguous'. "
+                "Do NOT ask user in chat — they pick from the product dropdown in the UI.\n"
+                "  found=false (no match) → rate_per_unit: null, price_source: 'not_found'. "
+                "HARD RULE: do NOT ask user for price, do NOT mention edit screen, do NOT proceed. "
+                "The system will block the order and respond: "
+                "'[Product] is not found in inventory. Please add it to the inventory first "
+                "before processing this order.' This rule cannot be overridden."
             ),
             "parameters": {
                 "type": "object",
