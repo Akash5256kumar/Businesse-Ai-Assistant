@@ -18,6 +18,153 @@ _client = AsyncOpenAI(api_key=settings.openai_api_key)
 
 _MODEL = "gpt-4o-mini"
 
+# ── Bug 1: Devanagari post-processing ────────────────────────────────────────
+
+_DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]+")
+
+
+def _has_devanagari(text: str) -> bool:
+    return bool(_DEVANAGARI_RE.search(text))
+
+
+def _any_devanagari(data: Any) -> bool:
+    """Recursively check all string values in a JSON-serializable structure."""
+    if isinstance(data, str):
+        return _has_devanagari(data)
+    if isinstance(data, dict):
+        return any(_any_devanagari(v) for v in data.values())
+    if isinstance(data, list):
+        return any(_any_devanagari(item) for item in data)
+    return False
+
+
+def _strip_devanagari(text: str) -> str:
+    """Remove Devanagari characters from a string (last-resort fallback)."""
+    return _DEVANAGARI_RE.sub("", text).strip()
+
+
+def _strip_devanagari_from_parsed(data: Any) -> Any:
+    """Walk a parsed JSON structure and remove Devanagari from all string fields."""
+    if isinstance(data, str):
+        return _strip_devanagari(data)
+    if isinstance(data, dict):
+        return {k: _strip_devanagari_from_parsed(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [_strip_devanagari_from_parsed(item) for item in data]
+    return data
+
+
+# ── Bug 2 Step 1: Dedicated product name extraction ───────────────────────────
+
+_PRODUCT_EXTRACT_SYSTEM = """\
+Extract product items from a Hindi/Hinglish shop order.
+Return ONLY valid JSON — no extra text.
+
+{"items": [{"product": "<clean_name>", "quantity": <number_or_null>, "unit": "<unit_or_null>"}]}
+
+Rules for product:
+  - Lowercase only
+  - Strip ALL filler words: bhai, de do, wala, please, yaar, dena, lena, dijiye, chahiye, hai, etc.
+  - Strip customer names, pronouns, verbs, instructions
+  - Keep ONLY the product commodity name (e.g. atta, chawal, daal, paneer)
+
+Rules for quantity:
+  - Extract the numeric value (e.g. "5 kilo" → 5, "2 dozen" → 2)
+  - null if no quantity mentioned
+
+Rules for unit:
+  - Normalize: kilo/kilogram → kg | gram/grams → g | litre/liter/ltr → litre
+  - piece/pcs/pc → piece | dozen → dozen | packet/pack → packet
+  - null if no unit mentioned
+
+Examples:
+"bhai 5 kilo wala atta de do" → {"items":[{"product":"atta","quantity":5,"unit":"kg"}]}
+"Raju ko 2kg chawal 1kg daal diya" → {"items":[{"product":"chawal","quantity":2,"unit":"kg"},{"product":"daal","quantity":1,"unit":"kg"}]}
+"paneer dena" → {"items":[{"product":"paneer","quantity":null,"unit":null}]}
+"rice, sugar, aata leke gaya — 5kg each" → {"items":[{"product":"rice","quantity":5,"unit":"kg"},{"product":"sugar","quantity":5,"unit":"kg"},{"product":"aata","quantity":5,"unit":"kg"}]}
+"""
+
+
+async def extract_products_from_text(raw_message: str) -> list[dict]:
+    """
+    Step 1: Dedicated product-name extraction from raw transcription.
+    Separates product name from quantity, unit, and filler words.
+    Returns list of {product, quantity, unit} with clean, normalised product names.
+    """
+    try:
+        resp = await _client.chat.completions.create(
+            model=_MODEL,
+            messages=[
+                {"role": "system", "content": _PRODUCT_EXTRACT_SYSTEM},
+                {"role": "user", "content": raw_message},
+            ],
+            temperature=0,
+            max_tokens=256,
+            response_format={"type": "json_object"},
+        )
+        raw = resp.choices[0].message.content or "{}"
+        data = json.loads(raw)
+        items = data.get("items", [])
+        for item in items:
+            if isinstance(item.get("product"), str):
+                item["product"] = item["product"].strip().lower()
+        return items
+    except Exception as exc:
+        _logger.warning("Product extraction step failed: %s", exc)
+        return []
+
+
+def _build_product_context_section(catalog_results: list[dict]) -> str:
+    """
+    Build a system-prompt section from Step 1 + Step 2 pre-analysis results.
+    Gives the AI strong, grounded hints about which products were found and at what confidence.
+    """
+    if not catalog_results:
+        return ""
+
+    lines: list[str] = [
+        "\n\n══════════════════════════════════════════════",
+        "PRODUCT PRE-ANALYSIS — Step 1 (extraction) + Step 2 (catalog match)",
+        "Use this as authoritative context. Call get_recent_price only if rate is missing below.",
+        "══════════════════════════════════════════════",
+    ]
+
+    for res in catalog_results:
+        extracted = res.get("extracted", {})
+        matches = res.get("catalog_matches", {})
+        product = extracted.get("product", "")
+        qty = extracted.get("quantity")
+        unit = extracted.get("unit")
+        top_conf = matches.get("top_match_confidence", 0.0)
+        match_list = matches.get("matches", [])
+
+        qty_str = f" qty={qty}" if qty is not None else ""
+        unit_str = f" unit={unit}" if unit else ""
+        lines.append(f"  '{product}'{qty_str}{unit_str}:")
+
+        if top_conf >= 0.80 and match_list:
+            best = match_list[0]
+            price = best.get("last_sale_price") or best.get("last_purchase_price")
+            price_str = f"Rs{price}" if price else "no price stored"
+            lines.append(
+                f"    → FOUND in catalog: '{best['product_name']}' "
+                f"(confidence={top_conf:.0%}, {price_str}/{best.get('unit','?')})"
+            )
+        elif top_conf >= 0.50 and match_list:
+            names = [m["product_name"] for m in match_list[:3]]
+            lines.append(
+                f"    → AMBIGUOUS ({top_conf:.0%}): {', '.join(names)} "
+                "— keep rate_per_unit: null, price_source: 'user'; user picks from dropdown"
+            )
+        else:
+            lines.append(
+                f"    → NOT FOUND in catalog ({top_conf:.0%}) "
+                "— set rate_per_unit: null, price_source: 'user'; transaction WILL be blocked"
+            )
+
+    lines.append("")
+    return "\n".join(lines)
+
 # ── Regex helpers ────────────────────────────────────────────────────────────
 
 # If any item unit found → message is complex → skip regex, go to AI
@@ -646,11 +793,13 @@ def _build_messages(
     muril_context: dict | None = None,
     client_hints: dict | None = None,
     shop_type: str = "general",
+    product_context: str = "",
 ) -> list[dict[str, str]]:
     system_content = (
         _SYSTEM_PROMPT
         + get_shop_context(shop_type)
         + _build_muril_context_section(muril_context, client_hints)
+        + product_context
     )
     messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
 
@@ -686,6 +835,37 @@ def _build_messages(
     return messages
 
 
+# ── Devanagari-guard regeneration ─────────────────────────────────────────────
+
+_DEVANAGARI_REGEN_INSTRUCTION = (
+    "[SYSTEM CORRECTION: Your previous response contained Devanagari (Hindi) script which is "
+    "STRICTLY FORBIDDEN. You MUST rewrite the ENTIRE response using ONLY Roman Hinglish. "
+    "Transliterate every Devanagari word to Roman letters (e.g. 'naam' not 'नाम'). "
+    "Return ONLY valid JSON — no Devanagari characters anywhere.]"
+)
+
+
+async def _regen_without_devanagari(messages: list[dict], raw: str) -> dict | None:
+    """One extra LLM call to purge Devanagari from a response that slipped through."""
+    regen_msgs = messages + [
+        {"role": "assistant", "content": raw},
+        {"role": "user", "content": _DEVANAGARI_REGEN_INSTRUCTION},
+    ]
+    try:
+        resp = await _client.chat.completions.create(
+            model=_MODEL,
+            messages=regen_msgs,
+            temperature=0,
+            max_tokens=1024,
+            response_format={"type": "json_object"},
+        )
+        regen_raw = resp.choices[0].message.content or ""
+        return _extract_json(regen_raw)
+    except Exception as exc:
+        _logger.error("Devanagari regeneration failed: %s", exc)
+        return None
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 async def parse_message(
@@ -699,30 +879,66 @@ async def parse_message(
     user_id: int | None = None,
 ) -> dict | None:
     """
-    Hybrid parser:
-      1. Regex fast-path  — free, instant (simple queries / payments / expenses)
-      2. LLM with tool calling — AI can call get_stock / get_customer_balance /
-         get_recent_price to ground answers in real DB data before returning JSON.
+    Full pipeline:
+      Step 0  — Regex fast-path (simple queries / payments / expenses).
+      Step 1  — Dedicated product-name extraction from raw transcription (sale messages).
+      Step 2  — Catalog fuzzy-match for each extracted product (≥ 0.80 confidence).
+               Context injected into LLM system prompt.
+      Step 3  — LLM parse with tool calling (get_recent_price / get_stock / etc.).
+      Post    — Devanagari scan: regenerate or strip if any Devanagari found.
 
-    db + user_id: required for tool calling. When None, tools are disabled.
+    db + user_id required for tool calling and Steps 1-2. When None, tools are disabled.
     """
+    # Lazy import to avoid circular dependency (ai_service ← inventory_service ← transaction_service)
+    from app.services import inventory_service as _inventory_service  # noqa: PLC0415
+
     clean = _preprocess(message)
     use_context = _needs_conversation_context(clean, history, pending_clarification)
 
-    # Fast path — no API call needed when the message stands on its own
+    # ── Step 0: Regex fast-path ───────────────────────────────────────────────
     quick = None if use_context else _try_regex(clean)
     if quick is not None:
         _logger.debug("regex parsed: %s", quick["transactions"][0]["type"])
         return quick
 
-    # AI path — with tool calling when DB is available
+    # ── Steps 1 & 2: Product extraction + catalog matching ────────────────────
+    # Run only when message contains item units (sale-like) and DB is available.
+    product_context = ""
+    if db is not None and user_id is not None and _ITEM_UNITS.search(clean):
+        try:
+            extracted_items = await extract_products_from_text(message)
+            _logger.debug("Step 1 extracted: %s", extracted_items)
+
+            if extracted_items:
+                catalog_results: list[dict] = []
+                for item in extracted_items:
+                    product_name = item.get("product", "").strip()
+                    if not product_name:
+                        continue
+                    catalog_data = await _inventory_service.find_product_catalog_matches(
+                        db, user_id, product_name
+                    )
+                    _logger.debug(
+                        "Step 2 catalog match for '%s': top_conf=%.2f",
+                        product_name,
+                        catalog_data.get("top_match_confidence", 0.0),
+                    )
+                    catalog_results.append({"extracted": item, "catalog_matches": catalog_data})
+
+                product_context = _build_product_context_section(catalog_results)
+        except Exception as exc:
+            _logger.warning("Steps 1/2 product pipeline failed (non-fatal): %s", exc)
+
+    # ── Step 3: AI parse with tool calling ────────────────────────────────────
     _logger.debug("sending to AI: %s", clean[:60])
     use_tools = db is not None and user_id is not None
 
     for attempt in range(2):
         try:
             messages = _build_messages(
-                clean, history, pending_clarification, muril_context, client_hints, shop_type
+                clean, history, pending_clarification,
+                muril_context, client_hints, shop_type,
+                product_context=product_context,
             )
 
             if use_tools:
@@ -740,8 +956,7 @@ async def parse_message(
                 if tool_calls:
                     messages.append(response.choices[0].message)
                     for tc in tool_calls:
-                        import json as _json
-                        args = _json.loads(tc.function.arguments)
+                        args = json.loads(tc.function.arguments)
                         tool_result = await execute_tool(tc.function.name, args, db, user_id)
                         _logger.debug("Tool %s → %s", tc.function.name, tool_result[:120])
                         messages.append({
@@ -778,8 +993,25 @@ async def parse_message(
             raw = response.choices[0].message.content or ""
             _logger.debug("AI raw response: %s", raw[:200])
             parsed = _extract_json(raw)
+
             if parsed is not None:
+                # ── Bug 1 post-processing: Devanagari scan ────────────────────
+                if _any_devanagari(parsed):
+                    _logger.warning(
+                        "Devanagari detected in AI output — attempting regeneration"
+                    )
+                    regen = await _regen_without_devanagari(messages, raw)
+                    if regen is not None and not _any_devanagari(regen):
+                        _logger.debug("Regeneration succeeded — Devanagari removed")
+                        return regen
+                    # Regeneration still had Devanagari or failed — strip characters
+                    _logger.warning(
+                        "Regeneration did not fully remove Devanagari — stripping characters"
+                    )
+                    return _strip_devanagari_from_parsed(regen if regen is not None else parsed)
+
                 return parsed
+
             _logger.error("AI returned unparseable JSON: %s", raw[:300])
         except Exception as exc:
             _logger.error(

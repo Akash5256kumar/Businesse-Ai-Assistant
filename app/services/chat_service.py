@@ -23,7 +23,7 @@ from app.schemas.chat import (
     TransactionDraft,
     TransactionDraftItem,
 )
-from app.services import ai_service, customer_service, transaction_service
+from app.services import ai_service, customer_service, inventory_service, transaction_service
 from app.services.muril_service import muril_service
 
 _logger = logging.getLogger(__name__)
@@ -196,6 +196,75 @@ def _is_complete_sale(tx: dict) -> bool:
     return True
 
 
+# ── Bug 1: Devanagari scrub (defense-in-depth for hardcoded reply strings) ────
+
+_DEVANAGARI_SCRUB_RE = re.compile(r"[ऀ-ॿ]+")
+
+
+def _scrub(text: str) -> str:
+    """Remove any Devanagari characters that slipped into a reply string."""
+    return _DEVANAGARI_SCRUB_RE.sub("", text).strip()
+
+
+# ── Bug 2 Step 3: Inventory validation ───────────────────────────────────────
+
+async def _validate_sale_items(
+    db: AsyncSession,
+    user_id: int,
+    items: list[dict],
+) -> list[tuple[dict, str]]:
+    """
+    For each sale item, check inventory catalog with ≥ 0.80 confidence threshold.
+    Returns list of (item, status) where status is 'found' | 'ambiguous' | 'not_found'.
+    """
+    results: list[tuple[dict, str]] = []
+    for item in items:
+        name = (item.get("name") or "").strip()
+        if not name:
+            continue
+        catalog = await inventory_service.find_product_catalog_matches(db, user_id, name)
+        top_conf = catalog.get("top_match_confidence", 0.0)
+        if top_conf >= 0.80:
+            results.append((item, "found"))
+        elif top_conf >= 0.50:
+            results.append((item, "ambiguous"))
+        else:
+            results.append((item, "not_found"))
+    return results
+
+
+# ── Bug 2 Step 4: Order summary for confirmation ──────────────────────────────
+
+def _build_order_summary(tx: dict) -> str:
+    """
+    Step 4 confirmation message.
+    Format: 'Order Summary: [Product] — Rs[price]/[unit] x [qty] = Rs[total]. Confirm karo?'
+    """
+    customer = tx.get("customer_name") or "Customer"
+    items = tx.get("items") or []
+    total = float(tx.get("total_amount") or 0)
+    paid = float(tx.get("amount_paid") or 0)
+    pending = max(round(total - paid, 2), 0.0)
+
+    lines: list[str] = [f"Order Summary — {customer}:"]
+    for item in items:
+        name = item.get("name") or ""
+        qty = item.get("quantity") or 0
+        unit = item.get("unit") or "piece"
+        rate = item.get("rate_per_unit")
+        subtotal = float(item.get("subtotal") or 0)
+        if rate is not None:
+            lines.append(f"  {name}: Rs{rate}/{unit} x {qty} = Rs{subtotal:.0f}")
+        else:
+            lines.append(f"  {name}: {qty} {unit} (rate pending)")
+
+    lines.append(f"Total: Rs{total:.0f}")
+    if pending > 0:
+        lines.append(f"Baaki: Rs{pending:.0f}")
+    lines.append("Confirm karo?")
+    return "\n".join(lines)
+
+
 def _build_transaction_draft(tx: dict) -> TransactionDraft:
     items = [
         TransactionDraftItem(
@@ -305,11 +374,24 @@ async def _process_tx(
             q = "Kaunsa product add karna hai?"
             return None, None, ChatResponse(reply=q, clarification_needed=q)
 
-        # ── Complete sale → show summary draft before recording ────────────────
+        # ── Complete sale → Step 3 inventory check + Step 4 confirmation ──────
         if _is_complete_sale(tx):
+            # Step 3: Verify every item exists in inventory (confidence ≥ 0.80)
+            item_statuses = await _validate_sale_items(db, user_id, raw_items)
+            not_found = [item["name"] for item, status in item_statuses if status == "not_found"]
+            if not_found:
+                missing_str = ", ".join(not_found)
+                msg = (
+                    f"Yeh product(s) inventory mein nahi hai: {missing_str}. "
+                    "Pehle inventory mein add karo, tab yeh order process ho sakta hai."
+                )
+                return None, None, ChatResponse(reply=msg, clarification_needed=msg)
+
+            # Step 4: Show explicit order summary before any transaction is recorded
             draft = _build_transaction_draft(tx)
+            summary = _build_order_summary(tx)
             return None, None, ChatResponse(
-                reply="✅ Transaction ready hai — neeche review karo aur confirm karo ",
+                reply=summary,
                 transaction_draft=draft,
                 pending_transaction=tx,
             )
@@ -419,6 +501,8 @@ async def handle_message(
 
     clarification = parsed.get("clarification_needed")
     if clarification:
+        # Bug 1: scrub any Devanagari that slipped past ai_service post-processing
+        clarification = _scrub(clarification)
         await _log(db, user_id, raw_message, parsed, clarification)
         return ChatResponse(
             reply=clarification,
@@ -458,6 +542,8 @@ async def handle_message(
             tx_details.append(detail)
 
     reply = "\n\n".join(replies) if replies else "Samajh nahi aaya, thoda clear likhiye"
+    # Bug 1: final scrub on any reply assembled from AI-generated fields
+    reply = _scrub(reply)
     await _log(db, user_id, raw_message, parsed, reply)
 
     return ChatResponse(

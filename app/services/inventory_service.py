@@ -185,7 +185,7 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
       2. Past transactions — most recent rate_per_unit from sale/purchase items.
          Tie-break by frequency (most-ordered product wins).
     """
-    _AUTO_THRESHOLD = 0.75
+    _AUTO_THRESHOLD = 0.80   # raised from 0.75 — must be high-confidence to auto-proceed
     _FUZZY_THRESHOLD = 0.70
 
     # ── Source 1: Inventory table ─────────────────────────────────────────────
@@ -286,6 +286,62 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
         "product_name": product_name,
         "candidates": names,
         "message": f"Multiple products found for '{product_name}': {', '.join(names)}.",
+    }
+
+
+async def find_product_catalog_matches(
+    db: AsyncSession,
+    user_id: int,
+    product_name: str,
+    top_k: int = 3,
+) -> dict:
+    """
+    Step 2: RAG fuzzy matching of a product name against the shop's inventory catalog.
+
+    Uses character-level + word-set similarity (the same _match_score used elsewhere)
+    as the fuzzy-string matching component.  Returns top-k matches with confidence scores.
+
+    Thresholds:
+      ≥ 0.80 → high confidence, safe to auto-proceed
+      0.50–0.79 → ambiguous, needs_clarification = True
+      < 0.50 → not found, product_not_found = True
+    """
+    inv_result = await db.execute(select(Inventory).where(Inventory.user_id == user_id))
+    all_inv = inv_result.scalars().all()
+
+    if not all_inv:
+        return {
+            "top_match_confidence": 0.0,
+            "matches": [],
+            "needs_clarification": False,
+            "product_not_found": True,
+        }
+
+    scored = sorted(
+        [(i, _item_score(product_name, i)) for i in all_inv],
+        key=lambda x: x[1],
+        reverse=True,
+    )
+
+    matches = [
+        {
+            "product_name": inv.product_name,
+            "confidence": round(score, 3),
+            "last_sale_price": float(inv.last_sale_price) if inv.last_sale_price else None,
+            "last_purchase_price": float(inv.last_purchase_price) if inv.last_purchase_price else None,
+            "unit": inv.unit,
+        }
+        for inv, score in scored[:top_k]
+        if score > 0.0
+    ]
+
+    top_confidence = matches[0]["confidence"] if matches else 0.0
+
+    return {
+        "top_match_confidence": top_confidence,
+        "matches": matches,
+        "needs_clarification": 0.50 <= top_confidence < 0.80,
+        "product_not_found": top_confidence < 0.50,
     }
 
 
