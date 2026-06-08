@@ -12,13 +12,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.business import Business
 from app.models.message_log import MessageLog
 from app.schemas.chat import (
+    AddToInventoryRequest,
     ChatResponse,
     ConfirmTransactionRequest,
     CustomerCandidate,
     CustomerConfirmRequest,
+    InventoryActionProduct,
     MurilAnalysisResponse,
     MurilEntityResponse,
     ResponseItem,
+    SkipProductRequest,
     TransactionDetail,
     TransactionDraft,
     TransactionDraftItem,
@@ -212,16 +215,18 @@ async def _validate_sale_items(
     db: AsyncSession,
     user_id: int,
     items: list[dict],
-) -> list[tuple[dict, str]]:
+) -> list[tuple[dict, str, dict]]:
     """
     For each sale item, determine inventory status.
-    Returns list of (item, status) where status is 'found' | 'ambiguous' | 'not_found'.
+    Returns list of (item, status, catalog_data) where:
+      status       — 'found' | 'ambiguous' | 'not_found'
+      catalog_data — dict from find_product_catalog_matches (empty {} for fast-path cases)
 
     Fast-path: if the AI already marked price_source as 'not_found' or 'ambiguous',
     trust that sentinel and skip the extra catalog DB call for that item.
     Otherwise, verify via find_product_catalog_matches (≥ 0.80 threshold).
     """
-    results: list[tuple[dict, str]] = []
+    results: list[tuple[dict, str, dict]] = []
     for item in items:
         name = (item.get("name") or "").strip()
         if not name:
@@ -231,10 +236,10 @@ async def _validate_sale_items(
 
         # Fast-path: trust the AI's sentinel set during get_recent_price tool call
         if price_source == "not_found":
-            results.append((item, "not_found"))
+            results.append((item, "not_found", {}))
             continue
         if price_source == "ambiguous":
-            results.append((item, "ambiguous"))
+            results.append((item, "ambiguous", {}))
             continue
 
         # Authoritative catalog check for all other cases (including price_source "inventory"
@@ -242,11 +247,11 @@ async def _validate_sale_items(
         catalog = await inventory_service.find_product_catalog_matches(db, user_id, name)
         top_conf = catalog.get("top_match_confidence", 0.0)
         if top_conf >= 0.80:
-            results.append((item, "found"))
+            results.append((item, "found", catalog))
         elif top_conf >= 0.50:
-            results.append((item, "ambiguous"))
+            results.append((item, "ambiguous", catalog))
         else:
-            results.append((item, "not_found"))
+            results.append((item, "not_found", catalog))
     return results
 
 
@@ -308,6 +313,69 @@ def _build_transaction_draft(tx: dict) -> TransactionDraft:
         is_credit=pending > 0,
         note=tx.get("note"),
     )
+
+
+# ── Bug 4: Server-side DB price verification ─────────────────────────────────
+
+def _apply_db_prices(
+    tx: dict,
+    item_statuses: list[tuple[dict, str, dict]],
+) -> dict:
+    """
+    Rebuild sale items with DB-confirmed names and prices (Bug 4).
+
+    - found items: replace name with DB product_name and rate with DB last_sale_price
+      (fallback: last_purchase_price). Recalculate subtotal.
+    - ambiguous items: kept as-is (null rate, excluded from total).
+    - not_found items: should not appear here (caller handles Bug 3 first).
+
+    Fresh total = SUM of found-item subtotals only (per spec: exclude unconfirmed lines).
+    If amount_paid == original total (full-payment indicator), update to fresh total.
+    """
+    new_items: list[dict] = []
+    for item, status, catalog_data in item_statuses:
+        if status == "found" and catalog_data.get("matches"):
+            best = catalog_data["matches"][0]
+            db_name = best["product_name"]
+            db_price = best.get("last_sale_price") or best.get("last_purchase_price")
+            qty = float(item.get("quantity") or 0)
+            subtotal = round(float(db_price) * qty, 2) if db_price and qty else 0.0
+            new_items.append({
+                **item,
+                "name": db_name,
+                "rate_per_unit": float(db_price) if db_price else None,
+                "subtotal": subtotal,
+                "price_source": "inventory",
+                "unit": best.get("unit") or item.get("unit"),
+            })
+        else:
+            # ambiguous — keep as-is, rate stays null, excluded from total
+            new_items.append(item)
+
+    # Total: only items with a confirmed DB rate (not null)
+    fresh_total = round(sum(
+        float(i.get("subtotal") or 0)
+        for i in new_items
+        if i.get("rate_per_unit") is not None
+    ), 2)
+
+    original_total = float(tx.get("total_amount") or 0)
+    original_paid = float(tx.get("amount_paid") or 0)
+
+    # If user indicated full payment (paid ≥ AI-calculated total), lock to fresh total
+    amount_paid = fresh_total if original_paid >= original_total and original_total > 0 else min(original_paid, fresh_total)
+    pending = max(round(fresh_total - amount_paid, 2), 0.0)
+
+    return {
+        **tx,
+        "items": new_items,
+        "total_amount": fresh_total,
+        "calculated_total": fresh_total,
+        "amount_paid": amount_paid,
+        "pending_amount": pending if pending > 0 else None,
+        "is_credit": pending > 0,
+        "total_matches": True,
+    }
 
 
 # ── Transaction processor ─────────────────────────────────────────────────────
@@ -395,24 +463,51 @@ async def _process_tx(
         if _is_complete_sale(tx):
             # Step 3: Verify every item exists in inventory (confidence ≥ 0.80)
             item_statuses = await _validate_sale_items(db, user_id, raw_items)
-            not_found = [item["name"] for item, status in item_statuses if status == "not_found"]
-            if not_found:
-                # One sentence per missing product — exact required format, cannot be changed
+
+            # Bug 3: not-found products → return inline Add/Skip action buttons
+            not_found_items = [(item, cat) for item, status, cat in item_statuses if status == "not_found"]
+            if not_found_items:
+                action_products = [
+                    InventoryActionProduct(product_name=item["name"])
+                    for item, _ in not_found_items
+                ]
+                not_found_names = ", ".join(item["name"] for item, _ in not_found_items)
+                msg = (
+                    f"{not_found_names} not found in inventory. "
+                    "Add to inventory or skip to continue."
+                )
+                return None, None, ChatResponse(
+                    reply=msg,
+                    inventory_action_needed=action_products,
+                    pending_transaction=tx,
+                )
+
+            # Bug 4: found items with NULL/zero price in DB → block, ask user to update
+            no_price_names: list[str] = []
+            for item, status, catalog in item_statuses:
+                if status == "found" and catalog.get("matches"):
+                    best = catalog["matches"][0]
+                    price = best.get("last_sale_price") or best.get("last_purchase_price")
+                    if not price or float(price) == 0:
+                        no_price_names.append(best["product_name"])
+            if no_price_names:
                 lines = [
-                    f"{name} is not found in inventory. "
-                    "Please add it to the inventory first before processing this order."
-                    for name in not_found
+                    f"{name} has no price set in inventory. Please update the price first."
+                    for name in no_price_names
                 ]
                 msg = "\n".join(lines)
                 return None, None, ChatResponse(reply=msg, clarification_needed=msg)
 
+            # Bug 4: rebuild all items with DB-confirmed names and prices
+            rebuilt_tx = _apply_db_prices(tx, item_statuses)
+
             # Step 4: Show explicit order summary before any transaction is recorded
-            draft = _build_transaction_draft(tx)
-            summary = _build_order_summary(tx)
+            draft = _build_transaction_draft(rebuilt_tx)
+            summary = _build_order_summary(rebuilt_tx)
             return None, None, ChatResponse(
                 reply=summary,
                 transaction_draft=draft,
-                pending_transaction=tx,
+                pending_transaction=rebuilt_tx,
             )
 
         # Guard: items collected but amount_paid still unknown → ask before
@@ -455,6 +550,126 @@ async def _process_tx(
         customer_candidates=_candidate_list(candidates_with_scores),
         pending_transaction=tx,
     )
+
+
+# ── Bug 3: Inline inventory actions ──────────────────────────────────────────
+
+async def _resume_after_inventory_change(
+    db: AsyncSession,
+    user_id: int,
+    tx: dict,
+    prefix_msg: str,
+) -> ChatResponse:
+    """
+    Re-run the full sale validation pipeline on a (possibly mutated) pending_transaction
+    and return the next appropriate ChatResponse.  Used by both add and skip paths.
+    """
+    raw_items = tx.get("items", [])
+    if not raw_items:
+        return ChatResponse(
+            reply=f"{prefix_msg}\nNo remaining products in order.",
+            clarification_needed="No remaining products in order.",
+        )
+
+    item_statuses = await _validate_sale_items(db, user_id, raw_items)
+
+    # Still some not-found products → show Add/Skip buttons for the remaining ones
+    not_found_items = [(item, cat) for item, status, cat in item_statuses if status == "not_found"]
+    if not_found_items:
+        action_products = [
+            InventoryActionProduct(product_name=item["name"])
+            for item, _ in not_found_items
+        ]
+        not_found_names = ", ".join(item["name"] for item, _ in not_found_items)
+        msg = f"{prefix_msg}\n{not_found_names} not found in inventory. Add to inventory or skip to continue."
+        return ChatResponse(
+            reply=msg,
+            inventory_action_needed=action_products,
+            pending_transaction=tx,
+        )
+
+    # Found items with no price → block
+    no_price_names: list[str] = []
+    for item, status, catalog in item_statuses:
+        if status == "found" and catalog.get("matches"):
+            best = catalog["matches"][0]
+            price = best.get("last_sale_price") or best.get("last_purchase_price")
+            if not price or float(price) == 0:
+                no_price_names.append(best["product_name"])
+    if no_price_names:
+        lines = [
+            f"{name} has no price set in inventory. Please update the price first."
+            for name in no_price_names
+        ]
+        msg = f"{prefix_msg}\n" + "\n".join(lines)
+        return ChatResponse(reply=msg, clarification_needed=msg)
+
+    # All items resolved — rebuild with DB prices and show confirmation
+    rebuilt_tx = _apply_db_prices(tx, item_statuses)
+    draft = _build_transaction_draft(rebuilt_tx)
+    summary = _build_order_summary(rebuilt_tx)
+    return ChatResponse(
+        reply=f"{prefix_msg}\n\n{summary}",
+        transaction_draft=draft,
+        pending_transaction=rebuilt_tx,
+    )
+
+
+async def add_to_inventory_and_resume(
+    db: AsyncSession,
+    user_id: int,
+    req: AddToInventoryRequest,
+) -> ChatResponse:
+    """
+    Bug 3 — "Add to Inventory" inline action.
+    Saves the product with the user-supplied price, then re-runs the full sale pipeline
+    on the pending transaction and returns the next step (more not-found, or confirmation).
+    """
+    from app.schemas.inventory import InventoryUpsertRequest  # noqa: PLC0415
+
+    upsert = InventoryUpsertRequest(
+        product_name=req.product_name,
+        quantity=req.quantity,
+        unit=req.unit,
+        last_sale_price=req.price_per_unit,
+    )
+    await inventory_service.upsert_inventory(db, user_id, upsert)
+    await db.commit()
+
+    prefix = f"{req.product_name} added to inventory at Rs.{req.price_per_unit:.0f}/{req.unit}. Continuing your order..."
+    return await _resume_after_inventory_change(db, user_id, req.pending_transaction, prefix)
+
+
+async def skip_product_and_resume(
+    db: AsyncSession,
+    user_id: int,
+    req: SkipProductRequest,
+) -> ChatResponse:
+    """
+    Bug 3 — "Skip & Continue" inline action.
+    Removes the specified products from the pending order with zero trace, then re-runs
+    the sale pipeline on the remaining items.
+    """
+    tx = req.pending_transaction
+    raw_items = tx.get("items", [])
+
+    skipped_lower = {n.lower() for n in req.product_names}
+    remaining = [
+        item for item in raw_items
+        if (item.get("name") or "").lower() not in skipped_lower
+    ]
+
+    if not remaining:
+        skipped_str = ", ".join(req.product_names)
+        return ChatResponse(
+            reply=f"{skipped_str} skipped. No remaining products in order.",
+            clarification_needed="No remaining products in order.",
+        )
+
+    updated_tx = {**tx, "items": remaining}
+    skipped_str = ", ".join(req.product_names)
+    prefix = f"{skipped_str} skipped. Moving to next item..."
+    return await _resume_after_inventory_change(db, user_id, updated_tx, prefix)
 
 
 # ── Main message handler ──────────────────────────────────────────────────────

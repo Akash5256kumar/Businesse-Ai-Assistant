@@ -97,6 +97,12 @@ class TransactionDraft(BaseModel):
     note: str | None = None
 
 
+# ── Bug 3: Inline inventory action (not-found product prompt) ─────────────────
+
+class InventoryActionProduct(BaseModel):
+    product_name: str
+
+
 # ── Main response ──────────────────────────────────────────────────────────────
 
 class ChatResponse(BaseModel):
@@ -109,6 +115,9 @@ class ChatResponse(BaseModel):
     transaction_draft: TransactionDraft | None = None
     # MuRIL analysis — null when disabled or on the confirm-customer endpoint.
     muril_analysis: MurilAnalysisResponse | None = None
+    # Bug 3: populated when one or more sale products are not found in inventory.
+    # Each entry renders "Add to Inventory" + "Skip & Continue" action buttons in the UI.
+    inventory_action_needed: list[InventoryActionProduct] = []
 
 
 # ── Confirm-customer request ───────────────────────────────────────────────────
@@ -117,6 +126,23 @@ class CustomerConfirmRequest(BaseModel):
     customer_id: int | None = None
     customer_name: str | None = None
     customer_phone: str | None = None
+    pending_transaction: dict
+
+
+# ── Bug 3: Add-to-inventory inline request ────────────────────────────────────
+
+class AddToInventoryRequest(BaseModel):
+    product_name: str
+    price_per_unit: float
+    unit: str
+    quantity: float = 0.0
+    pending_transaction: dict
+
+
+# ── Bug 3: Skip-product inline request ────────────────────────────────────────
+
+class SkipProductRequest(BaseModel):
+    product_names: list[str]          # one or more products to remove from the order
     pending_transaction: dict
 
 
