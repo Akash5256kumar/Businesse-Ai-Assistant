@@ -287,7 +287,9 @@ def _build_invoice_items(tx: Transaction) -> list[InvoiceItemSchema]:
             rate = float(raw_rate)
         else:
             rate = subtotal / quantity if quantity else subtotal
-        result.append(InvoiceItemSchema(name=name, quantity=quantity, rate=rate, subtotal=subtotal))
+        raw_unit = item.get("unit")
+        unit = str(raw_unit).strip() if raw_unit not in (None, "") else None
+        result.append(InvoiceItemSchema(name=name, quantity=quantity, unit=unit, rate=rate, subtotal=subtotal))
     return result
 
 

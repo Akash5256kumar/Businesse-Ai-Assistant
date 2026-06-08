@@ -57,6 +57,7 @@ class TransactionListResponse(BaseModel):
 class InvoiceItemSchema(BaseModel):
     name: str
     quantity: float
+    unit: str | None = None
     rate: float
     subtotal: float   # pre-calculated to avoid floating-point display errors
 
