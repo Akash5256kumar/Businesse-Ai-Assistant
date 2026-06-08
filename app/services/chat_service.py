@@ -459,6 +459,29 @@ async def _process_tx(
             q = "Kaunsa product add karna hai?"
             return None, None, ChatResponse(reply=q, clarification_needed=q)
 
+        # Early not-found check: the AI already marked items as price_source: "not_found".
+        # Show Add/Skip buttons immediately — before the complete-sale gate — so the user
+        # can resolve inventory issues even when customer_name or amount_paid is still null.
+        early_not_found = [
+            item for item in raw_items
+            if item.get("name", "").strip() and item.get("price_source") == "not_found"
+        ]
+        if early_not_found:
+            action_products = [
+                InventoryActionProduct(product_name=item["name"])
+                for item in early_not_found
+            ]
+            not_found_names = ", ".join(item["name"] for item in early_not_found)
+            msg = (
+                f"{not_found_names} not found in inventory. "
+                "Add to inventory or skip to continue."
+            )
+            return None, None, ChatResponse(
+                reply=msg,
+                inventory_action_needed=action_products,
+                pending_transaction=tx,
+            )
+
         # ── Complete sale → Step 3 inventory check + Step 4 confirmation ──────
         if _is_complete_sale(tx):
             # Step 3: Verify every item exists in inventory (confidence ≥ 0.80)
@@ -735,6 +758,55 @@ async def handle_message(
 
     clarification = parsed.get("clarification_needed")
     if clarification:
+        # Safety net: AI returned "not found in inventory" as clarification with empty transactions.
+        # The AI should have included the partial transaction with price_source: "not_found" items.
+        # Detect this pattern and generate inventory_action_needed so the UI shows Add/Skip buttons.
+        _inv_not_found_re = re.compile(
+            r"^(.+?)\s+is not found in inventory", re.IGNORECASE
+        )
+        if not parsed.get("transactions"):
+            not_found_names: list[str] = []
+            for line in clarification.strip().split("\n"):
+                m = _inv_not_found_re.match(line.strip())
+                if m:
+                    not_found_names.append(m.group(1).strip())
+            if not_found_names:
+                action_products = [
+                    InventoryActionProduct(product_name=name) for name in not_found_names
+                ]
+                msg = (
+                    f"{', '.join(not_found_names)} not found in inventory. "
+                    "Add to inventory or skip to continue."
+                )
+                minimal_tx: dict = {
+                    "type": "sale",
+                    "customer_name": None,
+                    "items": [
+                        {
+                            "name": name,
+                            "price_source": "not_found",
+                            "quantity": None,
+                            "unit": None,
+                            "rate_per_unit": None,
+                            "subtotal": 0,
+                        }
+                        for name in not_found_names
+                    ],
+                    "total_amount": 0,
+                    "amount_paid": None,
+                    "pending_amount": None,
+                    "is_credit": False,
+                    "calculated_total": 0,
+                    "total_matches": True,
+                }
+                await _log(db, user_id, raw_message, parsed, msg)
+                return ChatResponse(
+                    reply=msg,
+                    inventory_action_needed=action_products,
+                    pending_transaction=minimal_tx,
+                    muril_analysis=muril_response,
+                )
+
         # Bug 1: scrub any Devanagari that slipped past ai_service post-processing
         clarification = _scrub(clarification)
         await _log(db, user_id, raw_message, parsed, clarification)
