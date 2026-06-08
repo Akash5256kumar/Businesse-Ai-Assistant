@@ -42,6 +42,11 @@ _INTENT_TEMPLATES: dict[str, list[str]] = {
         "2kg chawal 40 rupay kilo diya",
         "Ramesh ne saman liya",
         "mal de diya customer ko",
+        "Keshav ne 2 kg tamato liya",  # misspelled product, still a sale
+        "customer ne vindi liya",       # unknown product name
+        "Ramesh ne 5 piece aachar liya",
+        "customer ko unknown item diya",
+        "2 kg cheez bech di",
     ],
     "ADD_PAYMENT": [
         "Raju ne 500 diya",
@@ -127,7 +132,9 @@ _PRODUCT_RE = re.compile(
     r"\b(aata|atta|chawal|rice|daal|dal|tel|oil|sugar|cheeni|namak|salt|"
     r"cement|rod|sand|paint|brick|tile|kapda|cloth|soap|shampoo|biscuit|"
     r"namkeen|doodh|milk|paneer|ghee|maida|besan|suji|poha|chana|rajma|"
-    r"sarso|moong|masala|mirchi|haldi|jeera|dhaniya|sabzi)\b",
+    r"sarso|moong|masala|mirchi|haldi|jeera|dhaniya|sabzi|"
+    r"tamato|tamatar|vindi|aaloo|alu|gobhi|bindi|matar|baigan|pyaz|pyaaz|"
+    r"adrak|lahsun|dhania|dhaniya|nimbu)\b",
     re.IGNORECASE,
 )
 

@@ -17,6 +17,7 @@ from app.schemas.chat import (
     ConfirmTransactionRequest,
     CustomerCandidate,
     CustomerConfirmRequest,
+    InventoryActionButton,
     InventoryActionProduct,
     MurilAnalysisResponse,
     MurilEntityResponse,
@@ -27,12 +28,41 @@ from app.schemas.chat import (
     TransactionDraftItem,
 )
 from app.services import ai_service, customer_service, inventory_service, transaction_service
+from app.services.ai_tools import _normalize_product_name
 from app.services.muril_service import muril_service
 
 _logger = logging.getLogger(__name__)
 
 _VALID_TYPES = {"sale", "payment", "purchase", "expense", "query"}
 _HISTORY_LIMIT = 12
+
+# ── Inventory action builder ──────────────────────────────────────────────────
+
+def _make_inventory_action_product(item: dict) -> InventoryActionProduct:
+    raw_name = item.get("name") or ""
+    normalized = _normalize_product_name(raw_name)
+    unit = item.get("unit") or "kg"
+    message = f"{raw_name.capitalize()} inventory mein nahi hai."
+    return InventoryActionProduct(
+        action="PRODUCT_NOT_FOUND",
+        product_name=normalized,
+        product_name_raw=raw_name,
+        message=message,
+        buttons=[
+            InventoryActionButton(
+                id="add_to_inventory",
+                label="Add to Inventory",
+                style="primary",
+                prefill={"product_name": normalized, "unit": unit},
+            ),
+            InventoryActionButton(
+                id="skip_product",
+                label="Skip & Continue",
+                style="secondary",
+            ),
+        ],
+    )
+
 
 # ── Greeting detection ────────────────────────────────────────────────────────
 
@@ -125,6 +155,30 @@ def _build_history(logs: list[MessageLog]) -> list[dict[str, str]]:
         else:
             history.append({"role": "assistant", "content": log.reply})
     return history
+
+
+def _get_pending_inventory_action(logs: list[MessageLog]) -> dict | None:
+    """Return pending inventory action data if the last response had PRODUCT_NOT_FOUND."""
+    if not logs:
+        return None
+    last_log = logs[-1]
+    if not last_log.ai_response:
+        return None
+    pending_tx = last_log.ai_response.get("__pending_inv_tx")
+    if pending_tx is None:
+        return None
+    return {"pending_tx": pending_tx}
+
+
+_PRICE_INPUT_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:rupye?|rs\.?|/-|per\s+(?:kg|litre|piece|unit))\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_price_input(msg: str) -> bool:
+    """True when message appears to be a user-spoken price (should be blocked after PRODUCT_NOT_FOUND)."""
+    return bool(_PRICE_INPUT_RE.search(msg))
 
 
 def _get_pending_clarification(logs: list[MessageLog]) -> dict | None:
@@ -467,19 +521,17 @@ async def _process_tx(
             if item.get("name", "").strip() and item.get("price_source") == "not_found"
         ]
         if early_not_found:
-            action_products = [
-                InventoryActionProduct(product_name=item["name"])
-                for item in early_not_found
-            ]
+            action_products = [_make_inventory_action_product(item) for item in early_not_found]
             not_found_names = ", ".join(item["name"] for item in early_not_found)
             msg = (
-                f"{not_found_names} not found in inventory. "
+                f"{not_found_names} inventory mein nahi hai. "
                 "Add to inventory or skip to continue."
             )
+            pending_tx_with_status = {**tx, "status": "BLOCKED_PRODUCT_NOT_IN_INVENTORY"}
             return None, None, ChatResponse(
                 reply=msg,
                 inventory_action_needed=action_products,
-                pending_transaction=tx,
+                pending_transaction=pending_tx_with_status,
             )
 
         # ── Complete sale → Step 3 inventory check + Step 4 confirmation ──────
@@ -490,19 +542,17 @@ async def _process_tx(
             # Bug 3: not-found products → return inline Add/Skip action buttons
             not_found_items = [(item, cat) for item, status, cat in item_statuses if status == "not_found"]
             if not_found_items:
-                action_products = [
-                    InventoryActionProduct(product_name=item["name"])
-                    for item, _ in not_found_items
-                ]
+                action_products = [_make_inventory_action_product(item) for item, _ in not_found_items]
                 not_found_names = ", ".join(item["name"] for item, _ in not_found_items)
                 msg = (
-                    f"{not_found_names} not found in inventory. "
+                    f"{not_found_names} inventory mein nahi hai. "
                     "Add to inventory or skip to continue."
                 )
+                pending_tx_with_status = {**tx, "status": "BLOCKED_PRODUCT_NOT_IN_INVENTORY"}
                 return None, None, ChatResponse(
                     reply=msg,
                     inventory_action_needed=action_products,
-                    pending_transaction=tx,
+                    pending_transaction=pending_tx_with_status,
                 )
 
             # Bug 4: found items with NULL/zero price in DB → block, ask user to update
@@ -599,16 +649,14 @@ async def _resume_after_inventory_change(
     # Still some not-found products → show Add/Skip buttons for the remaining ones
     not_found_items = [(item, cat) for item, status, cat in item_statuses if status == "not_found"]
     if not_found_items:
-        action_products = [
-            InventoryActionProduct(product_name=item["name"])
-            for item, _ in not_found_items
-        ]
+        action_products = [_make_inventory_action_product(item) for item, _ in not_found_items]
         not_found_names = ", ".join(item["name"] for item, _ in not_found_items)
-        msg = f"{prefix_msg}\n{not_found_names} not found in inventory. Add to inventory or skip to continue."
+        msg = f"{prefix_msg}\n{not_found_names} inventory mein nahi hai. Add to inventory or skip to continue."
+        pending_tx_with_status = {**tx, "status": "BLOCKED_PRODUCT_NOT_IN_INVENTORY"}
         return ChatResponse(
             reply=msg,
             inventory_action_needed=action_products,
-            pending_transaction=tx,
+            pending_transaction=pending_tx_with_status,
         )
 
     # Found items with no price → block
@@ -727,13 +775,32 @@ async def handle_message(
     )
     recent_logs, muril_analysis = await asyncio.gather(history_task, muril_task)
 
+    muril_response = _format_muril_analysis(muril_analysis)
+
+    # ── Block price input after PRODUCT_NOT_FOUND ─────────────────────────────
+    pending_inventory_action = _get_pending_inventory_action(recent_logs)
+    if pending_inventory_action and _looks_like_price_input(raw_message):
+        pending_tx = pending_inventory_action["pending_tx"]
+        not_found_items = [
+            item for item in pending_tx.get("items", [])
+            if item.get("price_source") == "not_found" and (item.get("name") or "").strip()
+        ]
+        if not_found_items:
+            action_products = [_make_inventory_action_product(item) for item in not_found_items]
+            msg = "Price chat mein nahi deta. Inventory mein add karo ya skip karo."
+            await _log(db, user_id, raw_message, {"__pending_inv_tx": pending_tx}, msg)
+            return ChatResponse(
+                reply=msg,
+                inventory_action_needed=action_products,
+                pending_transaction=pending_tx,
+                muril_analysis=muril_response,
+            )
+
     pending_clarification = _get_pending_clarification(recent_logs)
 
     client_hints: dict | None = None
     if raw_text or script or lang_hint:
         client_hints = {"raw_text": raw_text, "script": script, "lang_hint": lang_hint}
-
-    muril_response = _format_muril_analysis(muril_analysis)
 
     # ── Fetch shop_type from user's business ──────────────────────────────────
     business = await db.scalar(select(Business).where(Business.owner_id == user_id))
@@ -772,14 +839,34 @@ async def handle_message(
                     not_found_names.append(m.group(1).strip())
             if not_found_names:
                 action_products = [
-                    InventoryActionProduct(product_name=name) for name in not_found_names
+                    InventoryActionProduct(
+                        action="PRODUCT_NOT_FOUND",
+                        product_name=_normalize_product_name(name),
+                        product_name_raw=name,
+                        message=f"{name.capitalize()} inventory mein nahi hai.",
+                        buttons=[
+                            InventoryActionButton(
+                                id="add_to_inventory",
+                                label="Add to Inventory",
+                                style="primary",
+                                prefill={"product_name": _normalize_product_name(name), "unit": "kg"},
+                            ),
+                            InventoryActionButton(
+                                id="skip_product",
+                                label="Skip & Continue",
+                                style="secondary",
+                            ),
+                        ],
+                    )
+                    for name in not_found_names
                 ]
                 msg = (
-                    f"{', '.join(not_found_names)} not found in inventory. "
+                    f"{', '.join(not_found_names)} inventory mein nahi hai. "
                     "Add to inventory or skip to continue."
                 )
                 minimal_tx: dict = {
                     "type": "sale",
+                    "status": "BLOCKED_PRODUCT_NOT_IN_INVENTORY",
                     "customer_name": None,
                     "items": [
                         {
@@ -799,7 +886,7 @@ async def handle_message(
                     "calculated_total": 0,
                     "total_matches": True,
                 }
-                await _log(db, user_id, raw_message, parsed, msg)
+                await _log(db, user_id, raw_message, {**parsed, "__pending_inv_tx": minimal_tx}, msg)
                 return ChatResponse(
                     reply=msg,
                     inventory_action_needed=action_products,
@@ -838,6 +925,8 @@ async def handle_message(
             log_response = parsed
             if clarification_resp.clarification_needed:
                 log_response = {**parsed, "clarification_needed": clarification_resp.clarification_needed}
+            if clarification_resp.inventory_action_needed and clarification_resp.pending_transaction:
+                log_response = {**log_response, "__pending_inv_tx": clarification_resp.pending_transaction}
             await _log(db, user_id, raw_message, log_response, clarification_resp.reply)
             clarification_resp.muril_analysis = muril_response
             return clarification_resp

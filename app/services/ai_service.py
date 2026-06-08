@@ -724,6 +724,15 @@ IF a product's get_recent_price returns found=false (not ambiguous):
 ══════════════════════════════════════════════
 STRICT RULES — READ ALL CAREFULLY
 ══════════════════════════════════════════════
+0.  ⛔ INTENT RULE — MANDATORY:
+    Any sentence with a person name + quantity + product word + action word
+    (liya / diya / le gaya / kharida / purchased / bought / taken) = type: "sale" always.
+    NEVER return transactions: [] for a structurally valid sale sentence.
+    Intent is determined by sentence STRUCTURE — not by inventory status.
+    A missing product is an inventory issue. The transaction type is still "sale".
+    ✓ "Keshav ne 2 kg tamato liya" → type: "sale", confidence: "high"
+    ✓ "Ramesh ne 5 piece vindi liya" → type: "sale", confidence: "high"
+    ✓ "customer ne 3 kg xyz unknown product liya" → type: "sale", confidence: "high"
 1.  Return ONLY valid JSON. Zero extra text.
 2.  ALWAYS calculate subtotal = qty × rate yourself.
 3.  If user total != calculated total → keep user total, set total_matches=false.

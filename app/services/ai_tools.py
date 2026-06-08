@@ -9,6 +9,28 @@ from app.services import inventory_service
 
 _logger = logging.getLogger(__name__)
 
+# ── Product name normalization ─────────────────────────────────────────────────
+
+_PRODUCT_NORMALIZATIONS: dict[str, str] = {
+    "tamato": "tomato", "tamatar": "tomato", "tamaatar": "tomato",
+    "vindi": "bhindi", "bindi": "bhindi",
+    "aaloo": "aloo", "alu": "aloo",
+    "gobhi": "gobi", "gobhee": "gobi",
+    "matar": "mutter", "matter": "mutter", "mattar": "mutter",
+    "baigan": "baingan", "brinjal": "baingan",
+    "pyaz": "onion", "pyaaz": "onion",
+    "adrak": "ginger", "lahsun": "garlic",
+    "dhania": "coriander", "dhaniya": "coriander",
+    "mirchi": "chilli", "hari mirchi": "green chilli",
+    "nimbu": "lemon", "nimbo": "lemon",
+}
+
+
+def _normalize_product_name(name: str) -> str:
+    lower = name.lower().strip()
+    return _PRODUCT_NORMALIZATIONS.get(lower, lower)
+
+
 # ── OpenAI tool definitions ───────────────────────────────────────────────────
 
 TOOLS: list[dict] = [
@@ -71,9 +93,9 @@ TOOLS: list[dict] = [
                 "Do NOT ask user in chat — they pick from the product dropdown in the UI.\n"
                 "  found=false (no match) → rate_per_unit: null, price_source: 'not_found'. "
                 "HARD RULE: do NOT ask user for price, do NOT mention edit screen, do NOT proceed. "
-                "The system will block the order and respond: "
-                "'[Product] is not found in inventory. Please add it to the inventory first "
-                "before processing this order.' This rule cannot be overridden."
+                "The BACKEND automatically shows Add to Inventory and Skip & Continue buttons. "
+                "NEVER set clarification_needed to a not-found message. "
+                "ALWAYS include the item in transactions[]."
             ),
             "parameters": {
                 "type": "object",
@@ -105,7 +127,13 @@ async def execute_tool(
         elif tool_name == "get_customer_balance":
             result = await inventory_service.get_customer_balance(db, user_id, tool_args["customer_name"])
         elif tool_name == "get_recent_price":
-            result = await inventory_service.get_recent_price(db, user_id, tool_args["product_name"])
+            raw_name = tool_args["product_name"]
+            normalized = _normalize_product_name(raw_name)
+            result = await inventory_service.get_recent_price(db, user_id, normalized)
+            # Add raw_name to result so the caller knows what the user said
+            if isinstance(result, dict):
+                result["raw_name"] = raw_name
+                result["normalized_name"] = normalized
         else:
             result = {"error": f"Unknown tool: {tool_name}"}
     except Exception as exc:

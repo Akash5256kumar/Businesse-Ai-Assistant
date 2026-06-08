@@ -99,8 +99,19 @@ class TransactionDraft(BaseModel):
 
 # ── Bug 3: Inline inventory action (not-found product prompt) ─────────────────
 
+class InventoryActionButton(BaseModel):
+    id: str               # "add_to_inventory" | "skip_product"
+    label: str
+    style: str            # "primary" | "secondary"
+    prefill: dict[str, str] | None = None  # {product_name, unit}
+
+
 class InventoryActionProduct(BaseModel):
-    product_name: str
+    action: str = "PRODUCT_NOT_FOUND"
+    product_name: str      # normalized name (for DB lookup and Add to Inventory)
+    product_name_raw: str  # original user word (for display)
+    message: str           # short user-facing Hinglish notification e.g. "Tamato inventory mein nahi hai."
+    buttons: list[InventoryActionButton] = []
 
 
 # ── Main response ──────────────────────────────────────────────────────────────
