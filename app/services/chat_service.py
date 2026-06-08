@@ -651,11 +651,9 @@ async def add_to_inventory_and_resume(
     from app.schemas.inventory import InventoryUpsertRequest  # noqa: PLC0415
 
     upsert = InventoryUpsertRequest(
-        category=req.category,
         product_name=req.product_name,
         quantity=req.quantity,
         unit=req.unit,
-        last_purchase_price=req.purchase_price,
         last_sale_price=req.price_per_unit,
     )
     await inventory_service.upsert_inventory(db, user_id, upsert)

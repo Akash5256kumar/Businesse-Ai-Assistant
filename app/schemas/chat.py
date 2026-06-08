@@ -132,12 +132,10 @@ class CustomerConfirmRequest(BaseModel):
 # ── Bug 3: Add-to-inventory inline request ────────────────────────────────────
 
 class AddToInventoryRequest(BaseModel):
-    category: str
     product_name: str
-    quantity: float
+    price_per_unit: float
     unit: str
-    purchase_price: float   # last_purchase_price
-    price_per_unit: float   # last_sale_price (selling price)
+    quantity: float = 0.0
     pending_transaction: dict
 
 
