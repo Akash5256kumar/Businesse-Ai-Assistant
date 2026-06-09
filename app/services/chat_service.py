@@ -894,15 +894,119 @@ async def handle_message(
                     muril_analysis=muril_response,
                 )
 
-        # Bug 1: scrub any Devanagari that slipped past ai_service post-processing
-        clarification = _scrub(clarification)
-        await _log(db, user_id, raw_message, parsed, clarification)
-        return ChatResponse(
-            reply=clarification,
-            confidence=parsed.get("confidence", "low"),
-            clarification_needed=clarification,
-            muril_analysis=muril_response,
+            # Extended safety net: AI returned transactions: [] but asked for amount.
+            # Two-signal: sale verb in message AND amount question in clarification.
+            _sale_verb_re = re.compile(
+                r"\b(liya|diya|le\s+gaya|kharida|purchased|bought|le\s+li|de\s+diya|lia)\b",
+                re.IGNORECASE,
+            )
+            _amount_q_re = re.compile(
+                r"kitna\s+paisa|paisa.*mila|amount.*batao|paisa.*batao|kitna.*mila",
+                re.IGNORECASE,
+            )
+            if _sale_verb_re.search(raw_message) and _amount_q_re.search(clarification):
+                _product_entities = [
+                    e.get("value", "")
+                    for e in (muril_analysis or {}).get("entities", [])
+                    if e.get("type") == "PRODUCT" and e.get("score", 0) >= 0.5
+                ]
+                _qty_q = (
+                    f"Kitna diya? {', '.join(p for p in _product_entities if p)} ki quantity batao"
+                    if _product_entities
+                    else "Kitna diya? Product ki quantity batao pehle"
+                )
+                await _log(db, user_id, raw_message, parsed, _qty_q)
+                return ChatResponse(
+                    reply=_qty_q,
+                    confidence="low",
+                    clarification_needed=_qty_q,
+                    muril_analysis=muril_response,
+                )
+
+        # Task 1: If any transaction item is already marked not_found by the AI,
+        # bypass this clarification entirely and route to _process_tx so the
+        # Add/Skip buttons appear in the VERY FIRST response — before any question.
+        _has_not_found = any(
+            item.get("price_source") == "not_found" and (item.get("name") or "").strip()
+            for tx in (parsed.get("transactions") or [])
+            for item in tx.get("items", [])
         )
+        if not _has_not_found:
+            # Quantity override: AI returned quantity: null → ask before asking for amount.
+            _missing_qty = [
+                item.get("name", "")
+                for tx in (parsed.get("transactions") or [])
+                for item in tx.get("items", [])
+                if (item.get("name") or "").strip()
+                and item.get("quantity") is None
+                and item.get("price_source") != "not_found"
+            ]
+            if _missing_qty:
+                names = ", ".join(n for n in _missing_qty if n)
+                q = f"Kitna diya? {names} ki quantity batao"
+                await _log(db, user_id, raw_message, parsed, q)
+                return ChatResponse(
+                    reply=q,
+                    confidence=parsed.get("confidence", "low"),
+                    clarification_needed=q,
+                    muril_analysis=muril_response,
+                )
+
+            # Inferred-quantity guard: AI set quantity=1 (inferred from "liya/diya")
+            # instead of asking. Detected when: message has NO explicit number, has a
+            # sale verb, and clarification asks for amount. Quantity MUST be asked first.
+            _amount_q_re2 = re.compile(
+                r"kitna\s+paisa|paisa.*mila|amount.*batao|paisa.*batao|kitna.*mila",
+                re.IGNORECASE,
+            )
+            _sale_verb_re2 = re.compile(
+                r"\b(liya|diya|le\s+gaya|kharida|purchased|bought|le\s+li|de\s+diya|lia)\b",
+                re.IGNORECASE,
+            )
+            _has_explicit_number = bool(re.search(r"\b\d+(?:\.\d+)?\b", raw_message))
+            if (
+                not _has_explicit_number
+                and _sale_verb_re2.search(raw_message)
+                and _amount_q_re2.search(clarification or "")
+            ):
+                # Prefer item names from the transaction, fall back to MuRIL entities.
+                _inferred_items = [
+                    item.get("name", "")
+                    for tx in (parsed.get("transactions") or [])
+                    for item in tx.get("items", [])
+                    if (item.get("name") or "").strip()
+                    and item.get("price_source") != "not_found"
+                ]
+                if not _inferred_items:
+                    _inferred_items = [
+                        e.get("value", "")
+                        for e in (muril_analysis or {}).get("entities", [])
+                        if e.get("type") == "PRODUCT" and e.get("score", 0) >= 0.5
+                    ]
+                if _inferred_items:
+                    _names = ", ".join(n for n in _inferred_items if n)
+                    _q2 = f"Kitna diya? {_names} ki quantity batao"
+                else:
+                    _q2 = "Kitna diya? Product ki quantity batao pehle"
+                await _log(db, user_id, raw_message, parsed, _q2)
+                return ChatResponse(
+                    reply=_q2,
+                    confidence="low",
+                    clarification_needed=_q2,
+                    muril_analysis=muril_response,
+                )
+
+            # Bug 1: scrub any Devanagari that slipped past ai_service post-processing
+            clarification = _scrub(clarification)
+            await _log(db, user_id, raw_message, parsed, clarification)
+            return ChatResponse(
+                reply=clarification,
+                confidence=parsed.get("confidence", "low"),
+                clarification_needed=clarification,
+                muril_analysis=muril_response,
+            )
+        # else: fall through to _process_tx — it will detect the not_found items
+        # and return inventory_action_needed with the pending_transaction.
 
     transactions = parsed.get("transactions", [])
     if not transactions:
