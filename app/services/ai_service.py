@@ -162,7 +162,7 @@ def _build_product_context_section(catalog_results: list[dict]) -> str:
                 "— set rate_per_unit: null, price_source: 'not_found'; "
                 "ALWAYS include in transactions[]. Set clarification_needed: null. "
                 "The BACKEND shows Add/Skip buttons. DO NOT set clarification_needed to a 'not found' message. "
-                "DO NOT ask user for price. DO NOT mention edit screen."
+                "DO NOT ask user for price. DO NOT suggest any manual entry or workaround."
             )
 
     lines.append("")
@@ -391,7 +391,7 @@ All product prices MUST come from the database. No exceptions. No workarounds.
 ⛔ HARD INVENTORY RULE — read carefully:
   A sale can ONLY proceed when EVERY product is confirmed to exist in the inventory database.
   • If a product is NOT found → you MUST NOT collect further info for that product.
-  • Do NOT ask the user for price, rate, or suggest "set it in the edit screen".
+  • Do NOT ask the user for price, rate, or suggest any manual workaround.
   • Do NOT proceed with rate_per_unit: null for a not-found product.
   • The BACKEND will detect not_found items and show "Add to Inventory" / "Skip" action buttons.
   This rule cannot be overridden by any user request or conversation context.
@@ -413,7 +413,7 @@ For EVERY sale with a product name identified:
      ⛔ CRITICAL — Set clarification_needed: null. DO NOT write the "not found in inventory" message yourself.
      The BACKEND automatically shows "Add to Inventory" and "Skip & Continue" buttons to the user.
      NEVER return transactions: [] for a not-found product — the transaction MUST be in transactions[].
-     STRICTLY FORBIDDEN: asking for price, mentioning "edit screen", setting clarification_needed to any "not found" message.
+     STRICTLY FORBIDDEN: asking for price or any product field, setting clarification_needed to any "not found" message.
 
 SPECIAL CASE — user says "mujhe nhi pata", "db se fetch karo", "check karo inventory",
 "I don't remember the rate", "app se dekh lo", etc.:
@@ -510,7 +510,7 @@ FIELD RULES
                           found=false, ambiguous=true  → null, price_source: "ambiguous"
                           found=false (not ambiguous)  → null, price_source: "not_found"
                           ⛔ For not_found: include in transactions[], clarification_needed: null.
-                          NEVER ask user for rate. NEVER suggest edit screen for not-found products.
+                          NEVER ask user for rate or any product field for not-found products.
 - items[].subtotal : ALWAYS calculate = quantity × rate_per_unit (0 if either is null)
 - calculated_total : YOUR calculation (sum of subtotals; equals total_amount if no items)
 - total_matches    : true if user total == calculated_total
@@ -522,20 +522,33 @@ FIELD RULES
 ══════════════════════════════════════════════
 CLARIFICATION PRIORITY (ask in order — combine related gaps into one question)
 ══════════════════════════════════════════════
+
+⛔ OVERRIDE — NOT-FOUND PRODUCTS ARE ABSOLUTE HIGHEST PRIORITY:
+  The moment get_recent_price returns found=false (not ambiguous) for ANY item:
+  → Set clarification_needed: null — REGARDLESS of any other missing field.
+  → DO NOT ask for customer name, quantity, amount, or anything else.
+  → Include ALL items in transactions[] with the not_found item(s) marked.
+  → The BACKEND shows "Add to Inventory" / "Skip" buttons IMMEDIATELY.
+  → The backend collects missing fields AFTER the user resolves inventory.
+  This override fires before Steps 1–5 below. Nothing else takes priority.
+
 For SALE (STRICT — ALL 4 are mandatory before recording):
   Step 1 — customer_name missing AND not inferable → ask customer name FIRST
-  Step 2 — product/item name missing OR items[] is empty → ask "Kaunsa product add karna hai? 🙏" (MANDATORY)
+             ⛔ SKIP if any item has price_source "not_found" — see OVERRIDE above.
+  Step 2 — product/item name missing OR items[] is empty → ask "Kaunsa product add karna hai?" (MANDATORY)
   Step 3 — quantity missing for ANY item → ask quantity for those items
              Example: "Kitna diya? Rice, daal, paneer ki quantity batao (kg/litre/piece)"
              Note: NEVER ask for rate — DB fetches it automatically via get_recent_price.
+             ⛔ SKIP if any item has price_source "not_found" — see OVERRIDE above.
   Step 4 — rate_per_unit missing for ANY item → call get_recent_price tool FIRST.
              If found=true → use returned rate, price_source: "inventory".
              If found=false AND ambiguous → price_source: "ambiguous", rate_per_unit: null.
              If found=false (not ambiguous) → price_source: "not_found", rate_per_unit: null.
-             ⛔ For not_found: set clarification_needed: null. ALWAYS include in transactions[].
-             The BACKEND detects not_found items and shows Add/Skip buttons automatically.
-             NEVER ask user for rate. NEVER set clarification_needed to a "not found" message.
-  Step 5 — amount_paid missing → ask "Kitna paisa mila? Amount batao 🙏"
+             ⛔ For not_found: clarification_needed MUST be null. ALWAYS include in transactions[].
+             The BACKEND detects not_found items and shows Add/Skip buttons IMMEDIATELY.
+             NEVER ask ANY question when a not_found item exists.
+  Step 5 — amount_paid missing → ask "Kitna paisa mila? Amount batao"
+             ⛔ SKIP if any item has price_source "not_found" — see OVERRIDE above.
 
 QUANTITY RULES — MANDATORY:
   • quantity MUST be a positive number for every item in a sale.
@@ -543,6 +556,8 @@ QUANTITY RULES — MANDATORY:
   • If user gives product names but no quantities → set quantity: null and ask.
   • quantity and rate can be asked TOGETHER in one message to save turns.
   • Once quantity is known, calculate subtotal = quantity × rate_per_unit.
+  • ⛔ EXCEPTION: If any item has price_source "not_found", do NOT ask for quantity.
+    Set quantity: null for those items. The user resolves inventory first, then provides quantity.
 
 For PAYMENT / QUERY:
   Step 1 — customer_name missing → ask name
@@ -553,7 +568,7 @@ For PURCHASE / EXPENSE:
 
 ⚠ SALE RULE — ABSOLUTELY MANDATORY:
   • A sale CANNOT be recorded with items[] empty.
-  • If items[] is empty for a sale → set clarification_needed: "Kaunsa product add karna hai? 🙏"
+  • If items[] is empty for a sale → set clarification_needed: "Kaunsa product add karna hai?"
   • NEVER output a sale transaction with items: [] — this is invalid.
   • items[] must have at least one entry with a real product name for every sale.
   • Every item MUST have quantity > 0 before the transaction can be confirmed.
@@ -693,18 +708,29 @@ INPUT: "aaj mandi se 10kg aata 35/kg liya"
 OUTPUT:
 {"transactions":[{"type":"purchase","customer_name":null,"total_amount":350,"amount_paid":350,"pending_amount":null,"is_credit":false,"items":[{"name":"aata","quantity":10,"unit":"kg","rate_per_unit":35,"subtotal":350}],"calculated_total":350,"total_matches":true,"note":"Mandi se 10kg aata Rs350 kharida"}],"confidence":"high","clarification_needed":null}
 
-EXAMPLE 13 — Single product NOT FOUND, no customer name yet
+EXAMPLE 13 — Single product NOT FOUND (OVERRIDE fires — no questions, show buttons immediately)
 INPUT: "Vindi 50 kg de do"
 → AI calls get_recent_price("Vindi"). Returns found=false (not ambiguous).
+→ NOT-FOUND OVERRIDE fires immediately. DO NOT ask for customer name or anything else.
 ⛔ CORRECT BEHAVIOUR:
-  • Include Vindi in items[] with price_source: "not_found", rate_per_unit: null.
-  • Set clarification_needed: null — do NOT write "Vindi is not found in inventory".
-  • The BACKEND shows "Add to Inventory" / "Skip" buttons automatically.
+  • Set clarification_needed: null — even though customer_name is missing.
+  • Include Vindi in items[] with price_source: "not_found", rate_per_unit: null, quantity: 50.
+  • The BACKEND shows "Add to Inventory" / "Skip" buttons in the VERY FIRST response.
+  • After user resolves inventory, backend collects customer name and other missing info.
 OUTPUT:
 {"transactions":[{"type":"sale","customer_name":null,"items":[{"name":"Vindi","quantity":50,"unit":"kg","rate_per_unit":null,"price_source":"not_found","subtotal":0}],"total_amount":0,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":null}
 
+EXAMPLE 13b — NOT FOUND when customer name IS known
+INPUT: "Ramu ko Vindi 50 kg diya"
+→ AI calls get_recent_price("Vindi"). Returns found=false (not ambiguous).
+→ NOT-FOUND OVERRIDE fires. Set clarification_needed: null (even though amount_paid is missing).
+OUTPUT:
+{"transactions":[{"type":"sale","customer_name":"Ramu","items":[{"name":"Vindi","quantity":50,"unit":"kg","rate_per_unit":null,"price_source":"not_found","subtotal":0}],"total_amount":0,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":null}
+
 ⛔ WRONG BEHAVIOUR (NEVER DO THIS):
 {"transactions":[],"confidence":"low","clarification_needed":"Vindi is not found in inventory. Please add it to the inventory first before processing this order."}
+{"transactions":[...],"confidence":"low","clarification_needed":"Kis customer ko diya? Naam batao"}
+{"transactions":[...],"confidence":"low","clarification_needed":"Vindi ki quantity batao"}
 
 ══════════════════════════════════════════════
 ⛔ HARD RULE — INVENTORY REQUIREMENT (CANNOT BE OVERRIDDEN)

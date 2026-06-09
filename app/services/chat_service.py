@@ -699,9 +699,11 @@ async def add_to_inventory_and_resume(
     from app.schemas.inventory import InventoryUpsertRequest  # noqa: PLC0415
 
     upsert = InventoryUpsertRequest(
+        category=req.category,
         product_name=req.product_name,
         quantity=req.quantity,
         unit=req.unit,
+        last_purchase_price=req.purchase_price,
         last_sale_price=req.price_per_unit,
     )
     await inventory_service.upsert_inventory(db, user_id, upsert)
@@ -894,15 +896,26 @@ async def handle_message(
                     muril_analysis=muril_response,
                 )
 
-        # Bug 1: scrub any Devanagari that slipped past ai_service post-processing
-        clarification = _scrub(clarification)
-        await _log(db, user_id, raw_message, parsed, clarification)
-        return ChatResponse(
-            reply=clarification,
-            confidence=parsed.get("confidence", "low"),
-            clarification_needed=clarification,
-            muril_analysis=muril_response,
+        # Task 1: If any transaction item is already marked not_found by the AI,
+        # bypass this clarification entirely and route to _process_tx so the
+        # Add/Skip buttons appear in the VERY FIRST response — before any question.
+        _has_not_found = any(
+            item.get("price_source") == "not_found" and (item.get("name") or "").strip()
+            for tx in (parsed.get("transactions") or [])
+            for item in tx.get("items", [])
         )
+        if not _has_not_found:
+            # Bug 1: scrub any Devanagari that slipped past ai_service post-processing
+            clarification = _scrub(clarification)
+            await _log(db, user_id, raw_message, parsed, clarification)
+            return ChatResponse(
+                reply=clarification,
+                confidence=parsed.get("confidence", "low"),
+                clarification_needed=clarification,
+                muril_analysis=muril_response,
+            )
+        # else: fall through to _process_tx — it will detect the not_found items
+        # and return inventory_action_needed with the pending_transaction.
 
     transactions = parsed.get("transactions", [])
     if not transactions:
