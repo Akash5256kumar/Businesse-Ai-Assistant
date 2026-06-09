@@ -534,6 +534,19 @@ async def _process_tx(
                 pending_transaction=pending_tx_with_status,
             )
 
+        # Guard: quantity missing for any found item — ask before asking for amount.
+        # not_found items are excluded (inventory must be resolved first via Add/Skip).
+        missing_qty_items = [
+            item["name"] for item in raw_items
+            if item.get("name", "").strip()
+            and item.get("quantity") is None
+            and item.get("price_source") != "not_found"
+        ]
+        if missing_qty_items:
+            names = ", ".join(missing_qty_items)
+            q = f"Kitna diya? {names} ki quantity batao"
+            return None, None, ChatResponse(reply=q, clarification_needed=q)
+
         # ── Complete sale → Step 3 inventory check + Step 4 confirmation ──────
         if _is_complete_sale(tx):
             # Step 3: Verify every item exists in inventory (confidence ≥ 0.80)
