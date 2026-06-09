@@ -918,6 +918,26 @@ async def handle_message(
             for item in tx.get("items", [])
         )
         if not _has_not_found:
+            # Quantity override: if AI asked for something else (e.g. amount) but any
+            # found item still has quantity: null, ask for quantity first.
+            _missing_qty = [
+                item.get("name", "")
+                for tx in (parsed.get("transactions") or [])
+                for item in tx.get("items", [])
+                if (item.get("name") or "").strip()
+                and item.get("quantity") is None
+                and item.get("price_source") != "not_found"
+            ]
+            if _missing_qty:
+                names = ", ".join(n for n in _missing_qty if n)
+                q = f"Kitna diya? {names} ki quantity batao"
+                await _log(db, user_id, raw_message, parsed, q)
+                return ChatResponse(
+                    reply=q,
+                    confidence=parsed.get("confidence", "low"),
+                    clarification_needed=q,
+                    muril_analysis=muril_response,
+                )
             # Bug 1: scrub any Devanagari that slipped past ai_service post-processing
             clarification = _scrub(clarification)
             await _log(db, user_id, raw_message, parsed, clarification)

@@ -445,6 +445,16 @@ PATTERN: "[qty] [unit] [item_name] [price] per [unit]"
 - pending_amount = total_amount - amount_paid
 - is_credit = true if any amount is pending
 
+⛔ QUANTITY EXTRACTION — CRITICAL RULE:
+  quantity MUST be a number explicitly stated by the user — a digit in the message.
+  NEVER infer or assume quantity from action verbs (liya, diya, le gaya, kharida, etc.).
+  "Keshav ne daal liya"      → quantity: null  (no number stated)
+  "Ramu ko chawal diya"      → quantity: null  (no number stated)
+  "Priya ne 5 kg aata liya"  → quantity: 5     (user stated 5)
+  "2 dozen ande"             → quantity: 2     (user stated 2)
+  If quantity is null → set clarification_needed: "Kitna diya? [product] ki quantity batao"
+  NEVER set quantity: 1 as a default. NEVER assume "1 piece" or any other default.
+
 ══════════════════════════════════════════════
 OUTPUT FORMAT
 ══════════════════════════════════════════════
@@ -503,7 +513,10 @@ EXAMPLES of partial state:
 FIELD RULES
 ══════════════════════════════════════════════
 - items[]          : MUST be non-empty with product names for "sale"; [] for payment/expense/query/purchase-without-items
-- items[].quantity : MANDATORY for every sale item — MUST be a positive number. Set null only while waiting for user to provide it; a sale with any null quantity CANNOT be confirmed.
+- items[].quantity : MANDATORY for every sale item — MUST be a number explicitly stated by the user.
+                     NEVER infer from verbs. "ne X liya/diya" without a number = quantity: null.
+                     NEVER default to 1. Set null → ask "Kitna diya? [product] ki quantity batao".
+                     A sale with any null quantity CANNOT be confirmed.
 - items[].unit     : kg/litre/piece/dozen/packet/box/meter/null
 - items[].rate_per_unit : price per unit — MUST come from DB via get_recent_price.
                           found=true  → use returned rate, price_source: "inventory"
@@ -750,8 +763,8 @@ OUTPUT:
 ⛔ WRONG BEHAVIOUR (NEVER DO THIS — do NOT skip quantity and ask for amount):
 {"transactions":[...],"confidence":"low","clarification_needed":"Kitna paisa mila? Amount batao"}
 
-EXAMPLE 14b — Multiple items, one without quantity
-INPUT: "Rakesh ko 2kg chawal aur daal diya"
+EXAMPLE 14b — Multiple items, one without quantity  
+INPUT: "Rakesh ko 2kg chawal aur daal diya"         
 → chawal has quantity=2. daal has no quantity.
 → AI calls get_recent_price for both. Both found.
 → Step 3: daal has quantity: null → ask daal ki quantity.
@@ -797,6 +810,13 @@ STRICT RULES — READ ALL CAREFULLY
     clarification_needed: "Kitna diya? [product] ki quantity batao" IMMEDIATELY in this turn.
     NEVER output clarification_needed: null when any item still has quantity: null.
     NEVER ask for amount_paid when quantity is still missing.
+6c. ⛔ NEVER INFER QUANTITY — HARDEST RULE:
+    The word "liya" (took), "diya" (gave), "le gaya" (took away), "kharida" (bought) does NOT
+    imply any quantity. These are verbs about a transaction event, not about how much.
+    "Keshav ne daal liya" → quantity: null — user said NO number. Ask quantity.
+    "Raju ko chawal diya" → quantity: null — user said NO number. Ask quantity.
+    "3 kg daal liya"      → quantity: 3    — user stated "3". Do not ask again.
+    Setting quantity: 1 by default is STRICTLY FORBIDDEN and will break the order flow.
 7.  One name = one customer (Raju / Raju bhai / raju = same person).
 8.  NEVER ask the same question again if user already answered it in this conversation.
     When clarification_needed, include PARTIAL transaction state in transactions[] (see PARTIAL STATE ACCUMULATION above).
