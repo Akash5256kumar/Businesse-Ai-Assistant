@@ -910,14 +910,21 @@ async def handle_message(
                 )
 
             # Extended safety net: AI violated PARTIAL STATE ACCUMULATION by returning
-            # transactions: [] for a sale-like message (e.g. "Keshav ne minkit rice liya").
-            # This happens when the AI finds the product in inventory but asks for amount
-            # instead of first asking for quantity. Detect using sale verbs + MuRIL products.
+            # transactions: [] for a sale-like message (e.g. "Keshav ne basmati rice liya").
+            # Two-signal trigger: sale verb in message AND amount question in clarification.
+            # This is a near-impossible false-positive: if the AI is asking "kitna paisa"
+            # with zero transactions and the user said "X liya", quantity was definitely skipped.
             _sale_verb_re = re.compile(
-                r"\b(liya|diya|le\s+gaya|kharida|purchased|bought|le\s+li|de\s+diya|lia)\b",
+                r"\b(liya|diya|le\s+gaya|kharida|purchased|bought|le\s+li|de\s+diya|lia|liya\b)\b",
                 re.IGNORECASE,
             )
-            if _sale_verb_re.search(raw_message):
+            _amount_q_re = re.compile(
+                r"kitna\s+paisa|paisa.*mila|amount.*batao|paisa.*batao|kitna.*mila",
+                re.IGNORECASE,
+            )
+            if _sale_verb_re.search(raw_message) and _amount_q_re.search(clarification):
+                # AI skipped asking for quantity — intercept and correct.
+                # Use MuRIL product names if available for a more helpful question.
                 _product_entities = [
                     e.get("value", "")
                     for e in (muril_analysis or {}).get("entities", [])
@@ -926,13 +933,15 @@ async def handle_message(
                 if _product_entities:
                     _names = ", ".join(p for p in _product_entities if p)
                     _qty_q = f"Kitna diya? {_names} ki quantity batao"
-                    await _log(db, user_id, raw_message, parsed, _qty_q)
-                    return ChatResponse(
-                        reply=_qty_q,
-                        confidence="low",
-                        clarification_needed=_qty_q,
-                        muril_analysis=muril_response,
-                    )
+                else:
+                    _qty_q = "Kitna diya? Product ki quantity batao pehle"
+                await _log(db, user_id, raw_message, parsed, _qty_q)
+                return ChatResponse(
+                    reply=_qty_q,
+                    confidence="low",
+                    clarification_needed=_qty_q,
+                    muril_analysis=muril_response,
+                )
 
         # Task 1: If any transaction item is already marked not_found by the AI,
         # bypass this clarification entirely and route to _process_tx so the
