@@ -534,19 +534,6 @@ async def _process_tx(
                 pending_transaction=pending_tx_with_status,
             )
 
-        # Guard: quantity missing for any found item — ask before asking for amount.
-        # not_found items are excluded (inventory must be resolved first via Add/Skip).
-        missing_qty_items = [
-            item["name"] for item in raw_items
-            if item.get("name", "").strip()
-            and item.get("quantity") is None
-            and item.get("price_source") != "not_found"
-        ]
-        if missing_qty_items:
-            names = ", ".join(missing_qty_items)
-            q = f"Kitna diya? {names} ki quantity batao"
-            return None, None, ChatResponse(reply=q, clarification_needed=q)
-
         # ── Complete sale → Step 3 inventory check + Step 4 confirmation ──────
         if _is_complete_sale(tx):
             # Step 3: Verify every item exists in inventory (confidence ≥ 0.80)
@@ -712,11 +699,9 @@ async def add_to_inventory_and_resume(
     from app.schemas.inventory import InventoryUpsertRequest  # noqa: PLC0415
 
     upsert = InventoryUpsertRequest(
-        category=req.category,
         product_name=req.product_name,
         quantity=req.quantity,
         unit=req.unit,
-        last_purchase_price=req.purchase_price,
         last_sale_price=req.price_per_unit,
     )
     await inventory_service.upsert_inventory(db, user_id, upsert)
@@ -909,80 +894,15 @@ async def handle_message(
                     muril_analysis=muril_response,
                 )
 
-            # Extended safety net: AI violated PARTIAL STATE ACCUMULATION by returning
-            # transactions: [] for a sale-like message (e.g. "Keshav ne basmati rice liya").
-            # Two-signal trigger: sale verb in message AND amount question in clarification.
-            # This is a near-impossible false-positive: if the AI is asking "kitna paisa"
-            # with zero transactions and the user said "X liya", quantity was definitely skipped.
-            _sale_verb_re = re.compile(
-                r"\b(liya|diya|le\s+gaya|kharida|purchased|bought|le\s+li|de\s+diya|lia|liya\b)\b",
-                re.IGNORECASE,
-            )
-            _amount_q_re = re.compile(
-                r"kitna\s+paisa|paisa.*mila|amount.*batao|paisa.*batao|kitna.*mila",
-                re.IGNORECASE,
-            )
-            if _sale_verb_re.search(raw_message) and _amount_q_re.search(clarification):
-                # AI skipped asking for quantity — intercept and correct.
-                # Use MuRIL product names if available for a more helpful question.
-                _product_entities = [
-                    e.get("value", "")
-                    for e in (muril_analysis or {}).get("entities", [])
-                    if e.get("type") == "PRODUCT" and e.get("score", 0) >= 0.5
-                ]
-                if _product_entities:
-                    _names = ", ".join(p for p in _product_entities if p)
-                    _qty_q = f"Kitna diya? {_names} ki quantity batao"
-                else:
-                    _qty_q = "Kitna diya? Product ki quantity batao pehle"
-                await _log(db, user_id, raw_message, parsed, _qty_q)
-                return ChatResponse(
-                    reply=_qty_q,
-                    confidence="low",
-                    clarification_needed=_qty_q,
-                    muril_analysis=muril_response,
-                )
-
-        # Task 1: If any transaction item is already marked not_found by the AI,
-        # bypass this clarification entirely and route to _process_tx so the
-        # Add/Skip buttons appear in the VERY FIRST response — before any question.
-        _has_not_found = any(
-            item.get("price_source") == "not_found" and (item.get("name") or "").strip()
-            for tx in (parsed.get("transactions") or [])
-            for item in tx.get("items", [])
+        # Bug 1: scrub any Devanagari that slipped past ai_service post-processing
+        clarification = _scrub(clarification)
+        await _log(db, user_id, raw_message, parsed, clarification)
+        return ChatResponse(
+            reply=clarification,
+            confidence=parsed.get("confidence", "low"),
+            clarification_needed=clarification,
+            muril_analysis=muril_response,
         )
-        if not _has_not_found:
-            # Quantity override: if AI asked for something else (e.g. amount) but any
-            # found item still has quantity: null, ask for quantity first.
-            _missing_qty = [
-                item.get("name", "")
-                for tx in (parsed.get("transactions") or [])
-                for item in tx.get("items", [])
-                if (item.get("name") or "").strip()
-                and item.get("quantity") is None
-                and item.get("price_source") != "not_found"
-            ]
-            if _missing_qty:
-                names = ", ".join(n for n in _missing_qty if n)
-                q = f"Kitna diya? {names} ki quantity batao"
-                await _log(db, user_id, raw_message, parsed, q)
-                return ChatResponse(
-                    reply=q,
-                    confidence=parsed.get("confidence", "low"),
-                    clarification_needed=q,
-                    muril_analysis=muril_response,
-                )
-            # Bug 1: scrub any Devanagari that slipped past ai_service post-processing
-            clarification = _scrub(clarification)
-            await _log(db, user_id, raw_message, parsed, clarification)
-            return ChatResponse(
-                reply=clarification,
-                confidence=parsed.get("confidence", "low"),
-                clarification_needed=clarification,
-                muril_analysis=muril_response,
-            )
-        # else: fall through to _process_tx — it will detect the not_found items
-        # and return inventory_action_needed with the pending_transaction.
 
     transactions = parsed.get("transactions", [])
     if not transactions:

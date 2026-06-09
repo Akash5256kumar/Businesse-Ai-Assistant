@@ -162,7 +162,7 @@ def _build_product_context_section(catalog_results: list[dict]) -> str:
                 "— set rate_per_unit: null, price_source: 'not_found'; "
                 "ALWAYS include in transactions[]. Set clarification_needed: null. "
                 "The BACKEND shows Add/Skip buttons. DO NOT set clarification_needed to a 'not found' message. "
-                "DO NOT ask user for price. DO NOT suggest any manual entry or workaround."
+                "DO NOT ask user for price. DO NOT mention edit screen."
             )
 
     lines.append("")
@@ -391,7 +391,7 @@ All product prices MUST come from the database. No exceptions. No workarounds.
 ⛔ HARD INVENTORY RULE — read carefully:
   A sale can ONLY proceed when EVERY product is confirmed to exist in the inventory database.
   • If a product is NOT found → you MUST NOT collect further info for that product.
-  • Do NOT ask the user for price, rate, or suggest any manual workaround.
+  • Do NOT ask the user for price, rate, or suggest "set it in the edit screen".
   • Do NOT proceed with rate_per_unit: null for a not-found product.
   • The BACKEND will detect not_found items and show "Add to Inventory" / "Skip" action buttons.
   This rule cannot be overridden by any user request or conversation context.
@@ -413,7 +413,7 @@ For EVERY sale with a product name identified:
      ⛔ CRITICAL — Set clarification_needed: null. DO NOT write the "not found in inventory" message yourself.
      The BACKEND automatically shows "Add to Inventory" and "Skip & Continue" buttons to the user.
      NEVER return transactions: [] for a not-found product — the transaction MUST be in transactions[].
-     STRICTLY FORBIDDEN: asking for price or any product field, setting clarification_needed to any "not found" message.
+     STRICTLY FORBIDDEN: asking for price, mentioning "edit screen", setting clarification_needed to any "not found" message.
 
 SPECIAL CASE — user says "mujhe nhi pata", "db se fetch karo", "check karo inventory",
 "I don't remember the rate", "app se dekh lo", etc.:
@@ -444,16 +444,6 @@ PATTERN: "[qty] [unit] [item_name] [price] per [unit]"
 - If totals differ → keep user total, set total_matches=false
 - pending_amount = total_amount - amount_paid
 - is_credit = true if any amount is pending
-
-⛔ QUANTITY EXTRACTION — CRITICAL RULE:
-  quantity MUST be a number explicitly stated by the user — a digit in the message.
-  NEVER infer or assume quantity from action verbs (liya, diya, le gaya, kharida, etc.).
-  "Keshav ne daal liya"      → quantity: null  (no number stated)
-  "Ramu ko chawal diya"      → quantity: null  (no number stated)
-  "Priya ne 5 kg aata liya"  → quantity: 5     (user stated 5)
-  "2 dozen ande"             → quantity: 2     (user stated 2)
-  If quantity is null → set clarification_needed: "Kitna diya? [product] ki quantity batao"
-  NEVER set quantity: 1 as a default. NEVER assume "1 piece" or any other default.
 
 ══════════════════════════════════════════════
 OUTPUT FORMAT
@@ -513,17 +503,14 @@ EXAMPLES of partial state:
 FIELD RULES
 ══════════════════════════════════════════════
 - items[]          : MUST be non-empty with product names for "sale"; [] for payment/expense/query/purchase-without-items
-- items[].quantity : MANDATORY for every sale item — MUST be a number explicitly stated by the user.
-                     NEVER infer from verbs. "ne X liya/diya" without a number = quantity: null.
-                     NEVER default to 1. Set null → ask "Kitna diya? [product] ki quantity batao".
-                     A sale with any null quantity CANNOT be confirmed.
+- items[].quantity : MANDATORY for every sale item — MUST be a positive number. Set null only while waiting for user to provide it; a sale with any null quantity CANNOT be confirmed.
 - items[].unit     : kg/litre/piece/dozen/packet/box/meter/null
 - items[].rate_per_unit : price per unit — MUST come from DB via get_recent_price.
                           found=true  → use returned rate, price_source: "inventory"
                           found=false, ambiguous=true  → null, price_source: "ambiguous"
                           found=false (not ambiguous)  → null, price_source: "not_found"
                           ⛔ For not_found: include in transactions[], clarification_needed: null.
-                          NEVER ask user for rate or any product field for not-found products.
+                          NEVER ask user for rate. NEVER suggest edit screen for not-found products.
 - items[].subtotal : ALWAYS calculate = quantity × rate_per_unit (0 if either is null)
 - calculated_total : YOUR calculation (sum of subtotals; equals total_amount if no items)
 - total_matches    : true if user total == calculated_total
@@ -535,46 +522,27 @@ FIELD RULES
 ══════════════════════════════════════════════
 CLARIFICATION PRIORITY (ask in order — combine related gaps into one question)
 ══════════════════════════════════════════════
-
-⛔ OVERRIDE — NOT-FOUND PRODUCTS ARE ABSOLUTE HIGHEST PRIORITY:
-  The moment get_recent_price returns found=false (not ambiguous) for ANY item:
-  → Set clarification_needed: null — REGARDLESS of any other missing field.
-  → DO NOT ask for customer name, quantity, amount, or anything else.
-  → Include ALL items in transactions[] with the not_found item(s) marked.
-  → The BACKEND shows "Add to Inventory" / "Skip" buttons IMMEDIATELY.
-  → The backend collects missing fields AFTER the user resolves inventory.
-  This override fires before Steps 1–5 below. Nothing else takes priority.
-
-For SALE (STRICT — ALL steps are mandatory before recording):
+For SALE (STRICT — ALL 4 are mandatory before recording):
   Step 1 — customer_name missing AND not inferable → ask customer name FIRST
-             ⛔ SKIP if any item has price_source "not_found" — see OVERRIDE above.
-  Step 2 — product/item name missing OR items[] is empty → ask "Kaunsa product add karna hai?" (MANDATORY)
-  Step 3 — quantity missing for ANY found item → MUST ask quantity BEFORE asking for amount.
-             ⚠ THIS IS MANDATORY — you CANNOT skip to Step 5 if any item has quantity: null.
-             Example: "Kitna diya? Rice ki quantity batao (kg/piece/litre)"
-             Example (multi-item): "Kitna diya? Rice, daal ki quantity batao"
+  Step 2 — product/item name missing OR items[] is empty → ask "Kaunsa product add karna hai? 🙏" (MANDATORY)
+  Step 3 — quantity missing for ANY item → ask quantity for those items
+             Example: "Kitna diya? Rice, daal, paneer ki quantity batao (kg/litre/piece)"
              Note: NEVER ask for rate — DB fetches it automatically via get_recent_price.
-             ⛔ SKIP if any item has price_source "not_found" — see OVERRIDE above.
   Step 4 — rate_per_unit missing for ANY item → call get_recent_price tool FIRST.
              If found=true → use returned rate, price_source: "inventory".
              If found=false AND ambiguous → price_source: "ambiguous", rate_per_unit: null.
              If found=false (not ambiguous) → price_source: "not_found", rate_per_unit: null.
-             ⛔ For not_found: clarification_needed MUST be null. ALWAYS include in transactions[].
-             The BACKEND detects not_found items and shows Add/Skip buttons IMMEDIATELY.
-             NEVER ask ANY question when a not_found item exists.
-  Step 5 — amount_paid missing → ask "Kitna paisa mila? Amount batao"
-             ⛔ SKIP if any item has price_source "not_found" — see OVERRIDE above.
-             ⛔ SKIP if any item still has quantity: null (Step 3 must fire first).
+             ⛔ For not_found: set clarification_needed: null. ALWAYS include in transactions[].
+             The BACKEND detects not_found items and shows Add/Skip buttons automatically.
+             NEVER ask user for rate. NEVER set clarification_needed to a "not found" message.
+  Step 5 — amount_paid missing → ask "Kitna paisa mila? Amount batao 🙏"
 
 QUANTITY RULES — MANDATORY:
   • quantity MUST be a positive number for every item in a sale.
-  • NEVER record a sale item with quantity: null or quantity: 0.
-  • If user gives product names but no quantities → set quantity: null and ask IMMEDIATELY in this turn.
-  • Do NOT ask for amount_paid if any item still has quantity: null — ask quantity first.
-  • quantity and rate CAN be asked together in one message: "Rice ki quantity aur rate batao"
+  • NEVER record a sale item with quantity=null or quantity=0.
+  • If user gives product names but no quantities → set quantity: null and ask.
+  • quantity and rate can be asked TOGETHER in one message to save turns.
   • Once quantity is known, calculate subtotal = quantity × rate_per_unit.
-  • ⛔ EXCEPTION: If any item has price_source "not_found", do NOT ask for quantity.
-    Set quantity: null for those items. The user resolves inventory first, then provides quantity.
 
 For PAYMENT / QUERY:
   Step 1 — customer_name missing → ask name
@@ -585,7 +553,7 @@ For PURCHASE / EXPENSE:
 
 ⚠ SALE RULE — ABSOLUTELY MANDATORY:
   • A sale CANNOT be recorded with items[] empty.
-  • If items[] is empty for a sale → set clarification_needed: "Kaunsa product add karna hai?"
+  • If items[] is empty for a sale → set clarification_needed: "Kaunsa product add karna hai? 🙏"
   • NEVER output a sale transaction with items: [] — this is invalid.
   • items[] must have at least one entry with a real product name for every sale.
   • Every item MUST have quantity > 0 before the transaction can be confirmed.
@@ -725,65 +693,18 @@ INPUT: "aaj mandi se 10kg aata 35/kg liya"
 OUTPUT:
 {"transactions":[{"type":"purchase","customer_name":null,"total_amount":350,"amount_paid":350,"pending_amount":null,"is_credit":false,"items":[{"name":"aata","quantity":10,"unit":"kg","rate_per_unit":35,"subtotal":350}],"calculated_total":350,"total_matches":true,"note":"Mandi se 10kg aata Rs350 kharida"}],"confidence":"high","clarification_needed":null}
 
-EXAMPLE 13 — Single product NOT FOUND (OVERRIDE fires — no questions, show buttons immediately)
+EXAMPLE 13 — Single product NOT FOUND, no customer name yet
 INPUT: "Vindi 50 kg de do"
 → AI calls get_recent_price("Vindi"). Returns found=false (not ambiguous).
-→ NOT-FOUND OVERRIDE fires immediately. DO NOT ask for customer name or anything else.
 ⛔ CORRECT BEHAVIOUR:
-  • Set clarification_needed: null — even though customer_name is missing.
-  • Include Vindi in items[] with price_source: "not_found", rate_per_unit: null, quantity: 50.
-  • The BACKEND shows "Add to Inventory" / "Skip" buttons in the VERY FIRST response.
-  • After user resolves inventory, backend collects customer name and other missing info.
+  • Include Vindi in items[] with price_source: "not_found", rate_per_unit: null.
+  • Set clarification_needed: null — do NOT write "Vindi is not found in inventory".
+  • The BACKEND shows "Add to Inventory" / "Skip" buttons automatically.
 OUTPUT:
 {"transactions":[{"type":"sale","customer_name":null,"items":[{"name":"Vindi","quantity":50,"unit":"kg","rate_per_unit":null,"price_source":"not_found","subtotal":0}],"total_amount":0,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":null}
 
-EXAMPLE 13b — NOT FOUND when customer name IS known
-INPUT: "Ramu ko Vindi 50 kg diya"
-→ AI calls get_recent_price("Vindi"). Returns found=false (not ambiguous).
-→ NOT-FOUND OVERRIDE fires. Set clarification_needed: null (even though amount_paid is missing).
-OUTPUT:
-{"transactions":[{"type":"sale","customer_name":"Ramu","items":[{"name":"Vindi","quantity":50,"unit":"kg","rate_per_unit":null,"price_source":"not_found","subtotal":0}],"total_amount":0,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":null}
-
 ⛔ WRONG BEHAVIOUR (NEVER DO THIS):
 {"transactions":[],"confidence":"low","clarification_needed":"Vindi is not found in inventory. Please add it to the inventory first before processing this order."}
-{"transactions":[...],"confidence":"low","clarification_needed":"Kis customer ko diya? Naam batao"}
-{"transactions":[...],"confidence":"low","clarification_needed":"Vindi ki quantity batao"}
-
-EXAMPLE 14 — Quantity missing for found product (MUST ask quantity, NOT amount)
-INPUT: "Keshav ne daal liya"
-→ AI calls get_recent_price("daal"). Suppose found=true, rate=80/kg.
-→ Quantity is NOT mentioned. Step 3 fires — MUST ask quantity before Step 5 (amount).
-⛔ CORRECT BEHAVIOUR:
-  • Include daal in items with quantity: null, rate_per_unit: 80, price_source: "inventory".
-  • Set clarification_needed: "Kitna diya? Daal ki quantity batao"
-  • DO NOT ask for amount_paid — quantity must be known first.
-OUTPUT:
-{"transactions":[{"type":"sale","customer_name":"Keshav","items":[{"name":"daal","quantity":null,"unit":"kg","rate_per_unit":80,"price_source":"inventory","subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kitna diya? Daal ki quantity batao"}
-
-⛔ WRONG BEHAVIOUR (NEVER DO THIS — do NOT skip quantity and ask for amount):
-{"transactions":[...],"confidence":"low","clarification_needed":"Kitna paisa mila? Amount batao"}
-
-EXAMPLE 14b — Multiple items, one without quantity  
-INPUT: "Rakesh ko 2kg chawal aur daal diya"         
-→ chawal has quantity=2. daal has no quantity.
-→ AI calls get_recent_price for both. Both found.
-→ Step 3: daal has quantity: null → ask daal ki quantity.
-OUTPUT:
-{"transactions":[{"type":"sale","customer_name":"Rakesh","items":[{"name":"chawal","quantity":2,"unit":"kg","rate_per_unit":45,"price_source":"inventory","subtotal":90},{"name":"daal","quantity":null,"unit":"kg","rate_per_unit":80,"price_source":"inventory","subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":90,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kitna diya? Daal ki quantity batao"}
-
-EXAMPLE 15 — Product found in DB but NO quantity stated (the most common case — DO NOT mess this up)
-INPUT: "Keshav ne minkit rice liya"
-→ No explicit quantity. AI calls get_recent_price("minkit rice"). Suppose found=true, rate=45/kg.
-→ quantity NOT mentioned by user → quantity: null (Rule 6c: NEVER infer from "liya").
-→ Step 3 fires: quantity: null → ask quantity BEFORE amount.
-→ MUST include partial transaction (PARTIAL STATE ACCUMULATION — you know customer + product!).
-→ NEVER return transactions: [] — you have customer_name="Keshav" and product="minkit rice".
-OUTPUT:
-{"transactions":[{"type":"sale","customer_name":"Keshav","items":[{"name":"minkit rice","quantity":null,"unit":"kg","rate_per_unit":45,"price_source":"inventory","subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kitna diya? Minkit rice ki quantity batao"}
-
-⛔ WRONG OUTPUT (NEVER DO THIS):
-{"transactions":[],"confidence":"high","clarification_needed":"Kitna paisa mila? Amount batao"}
-REASON: transactions must NOT be empty when customer+product are known. Quantity must be asked BEFORE amount.
 
 ══════════════════════════════════════════════
 ⛔ HARD RULE — INVENTORY REQUIREMENT (CANNOT BE OVERRIDDEN)
@@ -804,20 +725,14 @@ IF a product's get_recent_price returns found=false (not ambiguous):
 STRICT RULES — READ ALL CAREFULLY
 ══════════════════════════════════════════════
 0.  ⛔ INTENT RULE — MANDATORY:
-    Any sentence with a person name + product word + action word
+    Any sentence with a person name + quantity + product word + action word
     (liya / diya / le gaya / kharida / purchased / bought / taken) = type: "sale" always.
-    QUANTITY IS NOT REQUIRED TO CLASSIFY INTENT — quantity is collected separately (Rule 6b/6c).
     NEVER return transactions: [] for a structurally valid sale sentence.
-    Intent is determined by sentence STRUCTURE — not by inventory status or quantity presence.
-    A missing quantity is a data-collection issue → set quantity: null and ask.
+    Intent is determined by sentence STRUCTURE — not by inventory status.
     A missing product is an inventory issue. The transaction type is still "sale".
-    ✓ "Keshav ne 2 kg tamato liya"  → type: "sale", quantity: 2
-    ✓ "Ramesh ne 5 piece vindi liya"→ type: "sale", quantity: 5
-    ✓ "customer ne 3 kg xyz liya"   → type: "sale", quantity: 3
-    ✓ "Keshav ne minkit rice liya"  → type: "sale", quantity: null → INCLUDE in transactions[], ask quantity
-    ✓ "Ramu ko chawal diya"         → type: "sale", quantity: null → INCLUDE in transactions[], ask quantity
-    ⛔ WRONG: transactions: [] for "Keshav ne minkit rice liya" — you KNOW customer + product!
-    ⛔ WRONG: asking "Kitna paisa mila?" when quantity is still null — ask quantity FIRST (Rule 6b)
+    ✓ "Keshav ne 2 kg tamato liya" → type: "sale", confidence: "high"
+    ✓ "Ramesh ne 5 piece vindi liya" → type: "sale", confidence: "high"
+    ✓ "customer ne 3 kg xyz unknown product liya" → type: "sale", confidence: "high"
 1.  Return ONLY valid JSON. Zero extra text.
 2.  ALWAYS calculate subtotal = qty × rate yourself.
 3.  If user total != calculated total → keep user total, set total_matches=false.
@@ -826,17 +741,7 @@ STRICT RULES — READ ALL CAREFULLY
 6.  items[] = [] ONLY for payment/expense/query. For SALE: items[] MUST be non-empty.
 6b. Every sale item MUST have quantity > 0 before the transaction can be confirmed.
     quantity=null is only acceptable while collecting data. NEVER finalize with null quantity.
-    If only product names are given (no quantities) → set quantity: null AND set
-    clarification_needed: "Kitna diya? [product] ki quantity batao" IMMEDIATELY in this turn.
-    NEVER output clarification_needed: null when any item still has quantity: null.
-    NEVER ask for amount_paid when quantity is still missing.
-6c. ⛔ NEVER INFER QUANTITY — HARDEST RULE:
-    The word "liya" (took), "diya" (gave), "le gaya" (took away), "kharida" (bought) does NOT
-    imply any quantity. These are verbs about a transaction event, not about how much.
-    "Keshav ne daal liya" → quantity: null — user said NO number. Ask quantity.
-    "Raju ko chawal diya" → quantity: null — user said NO number. Ask quantity.
-    "3 kg daal liya"      → quantity: 3    — user stated "3". Do not ask again.
-    Setting quantity: 1 by default is STRICTLY FORBIDDEN and will break the order flow.
+    If only product names are given (no quantities), set quantity: null and ask immediately.
 7.  One name = one customer (Raju / Raju bhai / raju = same person).
 8.  NEVER ask the same question again if user already answered it in this conversation.
     When clarification_needed, include PARTIAL transaction state in transactions[] (see PARTIAL STATE ACCUMULATION above).
