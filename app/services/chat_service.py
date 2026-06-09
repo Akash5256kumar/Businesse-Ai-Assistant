@@ -909,6 +909,31 @@ async def handle_message(
                     muril_analysis=muril_response,
                 )
 
+            # Extended safety net: AI violated PARTIAL STATE ACCUMULATION by returning
+            # transactions: [] for a sale-like message (e.g. "Keshav ne minkit rice liya").
+            # This happens when the AI finds the product in inventory but asks for amount
+            # instead of first asking for quantity. Detect using sale verbs + MuRIL products.
+            _sale_verb_re = re.compile(
+                r"\b(liya|diya|le\s+gaya|kharida|purchased|bought|le\s+li|de\s+diya|lia)\b",
+                re.IGNORECASE,
+            )
+            if _sale_verb_re.search(raw_message):
+                _product_entities = [
+                    e.get("value", "")
+                    for e in (muril_analysis or {}).get("entities", [])
+                    if e.get("type") == "PRODUCT" and e.get("score", 0) >= 0.5
+                ]
+                if _product_entities:
+                    _names = ", ".join(p for p in _product_entities if p)
+                    _qty_q = f"Kitna diya? {_names} ki quantity batao"
+                    await _log(db, user_id, raw_message, parsed, _qty_q)
+                    return ChatResponse(
+                        reply=_qty_q,
+                        confidence="low",
+                        clarification_needed=_qty_q,
+                        muril_analysis=muril_response,
+                    )
+
         # Task 1: If any transaction item is already marked not_found by the AI,
         # bypass this clarification entirely and route to _process_tx so the
         # Add/Skip buttons appear in the VERY FIRST response — before any question.

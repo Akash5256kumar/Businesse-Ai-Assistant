@@ -771,6 +771,20 @@ INPUT: "Rakesh ko 2kg chawal aur daal diya"
 OUTPUT:
 {"transactions":[{"type":"sale","customer_name":"Rakesh","items":[{"name":"chawal","quantity":2,"unit":"kg","rate_per_unit":45,"price_source":"inventory","subtotal":90},{"name":"daal","quantity":null,"unit":"kg","rate_per_unit":80,"price_source":"inventory","subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":90,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kitna diya? Daal ki quantity batao"}
 
+EXAMPLE 15 — Product found in DB but NO quantity stated (the most common case — DO NOT mess this up)
+INPUT: "Keshav ne minkit rice liya"
+→ No explicit quantity. AI calls get_recent_price("minkit rice"). Suppose found=true, rate=45/kg.
+→ quantity NOT mentioned by user → quantity: null (Rule 6c: NEVER infer from "liya").
+→ Step 3 fires: quantity: null → ask quantity BEFORE amount.
+→ MUST include partial transaction (PARTIAL STATE ACCUMULATION — you know customer + product!).
+→ NEVER return transactions: [] — you have customer_name="Keshav" and product="minkit rice".
+OUTPUT:
+{"transactions":[{"type":"sale","customer_name":"Keshav","items":[{"name":"minkit rice","quantity":null,"unit":"kg","rate_per_unit":45,"price_source":"inventory","subtotal":0}],"total_amount":null,"amount_paid":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kitna diya? Minkit rice ki quantity batao"}
+
+⛔ WRONG OUTPUT (NEVER DO THIS):
+{"transactions":[],"confidence":"high","clarification_needed":"Kitna paisa mila? Amount batao"}
+REASON: transactions must NOT be empty when customer+product are known. Quantity must be asked BEFORE amount.
+
 ══════════════════════════════════════════════
 ⛔ HARD RULE — INVENTORY REQUIREMENT (CANNOT BE OVERRIDDEN)
 ══════════════════════════════════════════════
@@ -790,14 +804,20 @@ IF a product's get_recent_price returns found=false (not ambiguous):
 STRICT RULES — READ ALL CAREFULLY
 ══════════════════════════════════════════════
 0.  ⛔ INTENT RULE — MANDATORY:
-    Any sentence with a person name + quantity + product word + action word
+    Any sentence with a person name + product word + action word
     (liya / diya / le gaya / kharida / purchased / bought / taken) = type: "sale" always.
+    QUANTITY IS NOT REQUIRED TO CLASSIFY INTENT — quantity is collected separately (Rule 6b/6c).
     NEVER return transactions: [] for a structurally valid sale sentence.
-    Intent is determined by sentence STRUCTURE — not by inventory status.
+    Intent is determined by sentence STRUCTURE — not by inventory status or quantity presence.
+    A missing quantity is a data-collection issue → set quantity: null and ask.
     A missing product is an inventory issue. The transaction type is still "sale".
-    ✓ "Keshav ne 2 kg tamato liya" → type: "sale", confidence: "high"
-    ✓ "Ramesh ne 5 piece vindi liya" → type: "sale", confidence: "high"
-    ✓ "customer ne 3 kg xyz unknown product liya" → type: "sale", confidence: "high"
+    ✓ "Keshav ne 2 kg tamato liya"  → type: "sale", quantity: 2
+    ✓ "Ramesh ne 5 piece vindi liya"→ type: "sale", quantity: 5
+    ✓ "customer ne 3 kg xyz liya"   → type: "sale", quantity: 3
+    ✓ "Keshav ne minkit rice liya"  → type: "sale", quantity: null → INCLUDE in transactions[], ask quantity
+    ✓ "Ramu ko chawal diya"         → type: "sale", quantity: null → INCLUDE in transactions[], ask quantity
+    ⛔ WRONG: transactions: [] for "Keshav ne minkit rice liya" — you KNOW customer + product!
+    ⛔ WRONG: asking "Kitna paisa mila?" when quantity is still null — ask quantity FIRST (Rule 6b)
 1.  Return ONLY valid JSON. Zero extra text.
 2.  ALWAYS calculate subtotal = qty × rate yourself.
 3.  If user total != calculated total → keep user total, set total_matches=false.
