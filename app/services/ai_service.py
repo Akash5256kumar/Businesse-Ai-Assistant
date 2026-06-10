@@ -529,12 +529,12 @@ For SALE (STRICT — ALL 4 are mandatory before recording):
              Example: "Kitna diya? Rice, daal, paneer ki quantity batao (kg/litre/piece)"
              Note: NEVER ask for rate — DB fetches it automatically via get_recent_price.
   Step 4 — rate_per_unit missing for ANY item → call get_recent_price tool FIRST.
-             If found=true → use returned rate, price_source: "inventory".
-             If found=false AND ambiguous → price_source: "ambiguous", rate_per_unit: null.
+             If found=true → use returned rate, price_source: "inventory". ⛔ DO NOT ask user for rate.
+             If found=false AND ambiguous → price_source: "ambiguous", rate_per_unit: null. ⛔ DO NOT ask user for rate.
              If found=false (not ambiguous) → price_source: "not_found", rate_per_unit: null.
              ⛔ For not_found: set clarification_needed: null. ALWAYS include in transactions[].
              The BACKEND detects not_found items and shows Add/Skip buttons automatically.
-             NEVER ask user for rate. NEVER set clarification_needed to a "not found" message.
+             ⛔ NEVER ask user for rate in ANY case. NEVER ask "rate kya tha?" or "per kg batao".
   Step 5 — amount_paid missing → ask "Kitna paisa diya? Amount batao 💰"
 
 QUANTITY RULES — MANDATORY:
@@ -607,16 +607,16 @@ TURN 3 (user): "Ramu"
 OUTPUT:
 {"transactions":[{"type":"sale","customer_name":"Ramu","total_amount":80,"amount_paid":80,"pending_amount":null,"is_credit":false,"items":[{"name":"aata","quantity":2,"unit":"kg","rate_per_unit":40,"subtotal":80}],"calculated_total":80,"total_matches":true,"note":"Ramu ko 2kg aata Rs80, full payment"}],"confidence":"high","clarification_needed":null}
 
-EXAMPLE 4 — Multi-turn: name → product → rate → amount (each turn keeps accumulated state)
+EXAMPLE 4 — Multi-turn: name → product → amount (rate auto-fetched from DB, NEVER asked from user)
 TURN 1 (user): "Ramesh ko saamaan diya"
-TURN 2 (assistant): {"transactions":[{"type":"sale","customer_name":"Ramesh","items":[],"total_amount":null,"amount_paid":null,"pending_amount":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kaunsa product add karna hai? 🙏"}
+TURN 2 (assistant): {"transactions":[{"type":"sale","customer_name":"Ramesh","items":[],"total_amount":null,"amount_paid":null,"pending_amount":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kaunsa product add karna hai? 💰"}
 TURN 3 (user): "chawal 5kg"
-TURN 4 (assistant): {"transactions":[{"type":"sale","customer_name":"Ramesh","items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":null,"subtotal":0}],"total_amount":null,"amount_paid":null,"pending_amount":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Chawal ka rate kya tha? Per kg batao 🙏"}
-TURN 5 (user): "40 rupye kilo"
-TURN 6 (assistant): {"transactions":[{"type":"sale","customer_name":"Ramesh","items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":40,"subtotal":200}],"total_amount":200,"amount_paid":null,"pending_amount":null,"is_credit":false,"calculated_total":200,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kitna paisa diya? Amount batao 💰"}
-TURN 7 (user): "poora diya"
+→ AI calls get_recent_price("chawal") → found: rate_per_unit=40, unit="kg"
+⛔ DO NOT ask "Chawal ka rate kya tha?" — rate came from DB. Proceed directly to amount.
+TURN 4 (assistant): {"transactions":[{"type":"sale","customer_name":"Ramesh","items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":40,"subtotal":200,"price_source":"inventory"}],"total_amount":200,"amount_paid":null,"pending_amount":null,"is_credit":false,"calculated_total":200,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kitna paisa diya? Amount batao 💰"}
+TURN 5 (user): "poora diya"
 OUTPUT:
-{"transactions":[{"type":"sale","customer_name":"Ramesh","total_amount":200,"amount_paid":200,"pending_amount":null,"is_credit":false,"items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":40,"subtotal":200}],"calculated_total":200,"total_matches":true,"note":"Ramesh ko 5kg chawal Rs200, full payment"}],"confidence":"high","clarification_needed":null}
+{"transactions":[{"type":"sale","customer_name":"Ramesh","total_amount":200,"amount_paid":200,"pending_amount":null,"is_credit":false,"items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":40,"subtotal":200,"price_source":"inventory"}],"calculated_total":200,"total_matches":true,"note":"Ramesh ko 5kg chawal Rs200, full payment"}],"confidence":"high","clarification_needed":null}
 
 EXAMPLE 4c — DB fetches rates; ambiguous kept, NOT-FOUND blocked immediately
 TURN 1 (user): "Rakesh ko Rice daal paneer colddrink diya"
