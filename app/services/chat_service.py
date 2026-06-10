@@ -586,7 +586,7 @@ async def _process_tx(
         # Guard: items collected but amount_paid still unknown → ask before
         # proceeding to customer lookup, which would trigger a premature flow.
         if tx.get("amount_paid") is None:
-            q = "Kitna paisa mila? Amount batao"
+            q = "Kitna paisa diya? Amount batao 💰"
             return None, None, ChatResponse(reply=q, clarification_needed=q)
 
     # ── Sale / Payment — need customer ────────────────────────────────────────

@@ -429,7 +429,7 @@ Never skip the tool call when a product name is identified and rate is unknown.
 PAYMENT AMOUNT — MANDATORY FOR EVERY SALE
 ══════════════════════════════════════════════
   • amount_paid is REQUIRED for every sale transaction.
-  • If user has NOT explicitly stated how much was paid → ALWAYS ask: "Kitna paisa mila? Amount batao 🙏"
+  • If user has NOT explicitly stated how much was paid → ALWAYS ask: "Kitna paisa diya? Amount batao 💰"
   • Do NOT assume full payment (amount_paid = total) unless user explicitly says:
     "poora diya", "full payment", "saara diya", "sab diya", "cash diya", "online diya", "paid in full"
   • Only after knowing amount_paid → set is_credit=true if pending_amount > 0.
@@ -535,7 +535,7 @@ For SALE (STRICT — ALL 4 are mandatory before recording):
              ⛔ For not_found: set clarification_needed: null. ALWAYS include in transactions[].
              The BACKEND detects not_found items and shows Add/Skip buttons automatically.
              NEVER ask user for rate. NEVER set clarification_needed to a "not found" message.
-  Step 5 — amount_paid missing → ask "Kitna paisa mila? Amount batao 🙏"
+  Step 5 — amount_paid missing → ask "Kitna paisa diya? Amount batao 💰"
 
 QUANTITY RULES — MANDATORY:
   • quantity MUST be a positive number for every item in a sale.
@@ -613,7 +613,7 @@ TURN 2 (assistant): {"transactions":[{"type":"sale","customer_name":"Ramesh","it
 TURN 3 (user): "chawal 5kg"
 TURN 4 (assistant): {"transactions":[{"type":"sale","customer_name":"Ramesh","items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":null,"subtotal":0}],"total_amount":null,"amount_paid":null,"pending_amount":null,"is_credit":false,"calculated_total":0,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Chawal ka rate kya tha? Per kg batao 🙏"}
 TURN 5 (user): "40 rupye kilo"
-TURN 6 (assistant): {"transactions":[{"type":"sale","customer_name":"Ramesh","items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":40,"subtotal":200}],"total_amount":200,"amount_paid":null,"pending_amount":null,"is_credit":false,"calculated_total":200,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kitna paisa mila? Amount batao 🙏"}
+TURN 6 (assistant): {"transactions":[{"type":"sale","customer_name":"Ramesh","items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":40,"subtotal":200}],"total_amount":200,"amount_paid":null,"pending_amount":null,"is_credit":false,"calculated_total":200,"total_matches":true,"note":null}],"confidence":"low","clarification_needed":"Kitna paisa diya? Amount batao 💰"}
 TURN 7 (user): "poora diya"
 OUTPUT:
 {"transactions":[{"type":"sale","customer_name":"Ramesh","total_amount":200,"amount_paid":200,"pending_amount":null,"is_credit":false,"items":[{"name":"chawal","quantity":5,"unit":"kg","rate_per_unit":40,"subtotal":200}],"calculated_total":200,"total_matches":true,"note":"Ramesh ko 5kg chawal Rs200, full payment"}],"confidence":"high","clarification_needed":null}
