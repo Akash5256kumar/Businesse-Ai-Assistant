@@ -67,16 +67,30 @@ Rules for product:
   - Strip ALL filler words: bhai, de do, wala, please, yaar, dena, lena, dijiye, chahiye, hai, etc.
   - Strip customer names, pronouns, verbs, instructions
   - Keep ONLY the product commodity name (e.g. atta, chawal, daal, paneer)
-  ⛔ VERBATIM EXTRACTION — MOST IMPORTANT RULE:
+  ⛔ VERBATIM EXTRACTION — ABSOLUTE RULE (applies to ALL input including Devanagari):
      Extract the product name EXACTLY as the user said it. Do NOT rename, translate, or
      substitute with a "more common" product name from your training knowledge.
-     The inventory system will identify the correct match — your job is only to extract.
-  ✓ "minket rice" → product: "minket rice"   (NOT "brown rice" or "white rice")
-  ✓ "mansouri rice" → product: "mansouri rice"  (NOT "masoori rice" or "brown rice")
-  ✓ "yellow rice" → product: "yellow rice"   (NOT "basmati rice")
-  ✓ "rajbhog rice" → product: "rajbhog rice" (NOT "basmati rice")
-  ✓ "mogra rice" → product: "mogra rice"     (NOT "broken rice" or "white rice")
-  If you don't recognise a product name → extract it verbatim. Never substitute.
+     The inventory system will identify the correct match — your job is ONLY to extract verbatim.
+  ✓ "minket rice" → product: "minket rice"      ⛔ NOT "brown rice" or "white rice"
+  ✓ "mansouri rice" → product: "mansouri rice"   ⛔ NOT "masoori rice" or "brown rice"
+  ✓ "yellow rice" → product: "yellow rice"       ⛔ NOT "basmati rice"
+  ✓ "rajbhog rice" → product: "rajbhog rice"     ⛔ NOT "basmati rice"
+  ✓ "mogra rice" → product: "mogra rice"         ⛔ NOT "broken rice" or "white rice"
+  ✓ "trade rice" → product: "trade rice"         ⛔ NOT "brown rice"
+  ✓ "mingat rice" → product: "mingat rice"       ⛔ NOT "minket rice" or "brown rice"
+  ✓ "wada kolam rice" → product: "wada kolam rice" ⛔ NOT "kolam rice" or "brown rice"
+  If you don't recognise a product name → TRANSLITERATE it phonetically. Never substitute.
+
+⚠ DEVANAGARI TRANSLITERATION — phonetic only, no substitution:
+  Transliterate Devanagari words to Roman script phonetically. NEVER substitute with similar names.
+  "मिंगट"   → "mingat"    (NOT "minket", NOT "brown rice")
+  "ट्रेड"    → "trade"     (NOT "brown rice")
+  "वाडा"    → "wada"      (NOT "vada" — but either is OK)
+  "कोलंब"   → "kolam"     (NOT "kolumb")
+  "मूंग"    → "moong"     (NOT "mooch", NOT "mung")
+  "मसूरी"   → "masuri"    (NOT "masoori" — but close is OK)
+  "काली"    → "kali"
+  "श्रीराम"  → "sriram"
 
 Rules for quantity:
   - Extract the numeric value (e.g. "5 kilo" → 5, "2 dozen" → 2)
@@ -91,12 +105,21 @@ Rules for unit:
   - piece/pcs/pc → piece | dozen → dozen | packet/pack → packet
   - null if no unit mentioned
 
-Examples:
+Examples (Latin input):
 "bhai 5 kilo wala atta de do" → {"items":[{"product":"atta","quantity":5,"unit":"kg"}]}
 "Raju ko 2kg chawal 1kg daal diya" → {"items":[{"product":"chawal","quantity":2,"unit":"kg"},{"product":"daal","quantity":1,"unit":"kg"}]}
 "paneer dena" → {"items":[{"product":"paneer","quantity":null,"unit":null}]}
 "rice, sugar, aata leke gaya — 5kg each" → {"items":[{"product":"rice","quantity":5,"unit":"kg"},{"product":"sugar","quantity":5,"unit":"kg"},{"product":"aata","quantity":5,"unit":"kg"}]}
 "Keshav ne rajbhog rice liya five kg, seven kg minket rice liya" → {"items":[{"product":"rajbhog rice","quantity":5,"unit":"kg"},{"product":"minket rice","quantity":7,"unit":"kg"}]}
+
+Examples (Devanagari — transliterate verbatim, do NOT substitute):
+"केशव ने 6 केजी मिंगट राइस लिया" → {"items":[{"product":"mingat rice","quantity":6,"unit":"kg"}]}
+"15 केजी ट्रेड राइस दिया" → {"items":[{"product":"trade rice","quantity":15,"unit":"kg"}]}
+"श्रीराम वाडा कोलंब राइस 6 केजी" → {"items":[{"product":"sriram wada kolam rice","quantity":6,"unit":"kg"}]}
+"5 केजी काली मूंग चावल" → {"items":[{"product":"kali moong chawal","quantity":5,"unit":"kg"}]}
+"सोना मसूरी राइस 15 केजी" → {"items":[{"product":"sona masuri rice","quantity":15,"unit":"kg"}]}
+"27 केजी ब्राउन राइस" → {"items":[{"product":"brown rice","quantity":27,"unit":"kg"}]}
+"4 केजी ब्लैक राइस" → {"items":[{"product":"black rice","quantity":4,"unit":"kg"}]}
 """
 
 
@@ -172,12 +195,16 @@ def _build_product_context_section(catalog_results: list[dict]) -> str:
                 "— set rate_per_unit: null, price_source: 'ambiguous'; user picks from dropdown"
             )
         else:
+            qty_json = str(qty) if qty is not None else "null"
+            unit_json = f'"{unit}"' if unit else "null"
             lines.append(
-                f"    → ⛔ NOT FOUND in catalog ({top_conf:.0%}) "
-                "— set rate_per_unit: null, price_source: 'not_found'; "
-                "ALWAYS include in transactions[]. Set clarification_needed: null. "
-                "The BACKEND shows Add/Skip buttons. DO NOT set clarification_needed to a 'not found' message. "
-                "DO NOT ask user for price. DO NOT mention edit screen."
+                f"    → ⛔ NOT FOUND ({top_conf:.0%}) — NOT in inventory database.\n"
+                f"    ⚠ COPY THIS EXACT ITEM into transactions[].items[] (do NOT modify name or values):\n"
+                f"      {{\"name\": \"{product}\", \"quantity\": {qty_json}, \"unit\": {unit_json}, "
+                f"\"rate_per_unit\": null, \"price_source\": \"not_found\", \"subtotal\": 0}}\n"
+                f"    ⛔ DO NOT call get_recent_price for '{product}' — already resolved: not_found.\n"
+                f"    ⛔ DO NOT rename '{product}' to 'brown rice', 'white rice', or any other name.\n"
+                f"    → BACKEND handles Add/Skip buttons. Set clarification_needed: null."
             )
 
     lines.append("")
@@ -1055,6 +1082,86 @@ async def _regen_without_devanagari(messages: list[dict], raw: str) -> dict | No
         return None
 
 
+# ── Product name substitution guard ──────────────────────────────────────────
+
+def _fix_substituted_product_names(parsed: dict, catalog_results: list[dict]) -> dict:
+    """
+    Detect and reverse product name substitutions in the AI response.
+
+    Problem: When products are not in the inventory the AI sometimes renames them
+    to a known product (e.g. "mingat rice" → "brown rice") instead of keeping the
+    original name with price_source: "not_found".
+
+    Strategy: compare each AI-returned item (price_source="inventory") against the
+    Step-1-extracted products that had no catalog match (confidence < 0.50). When
+    quantities match AND names are different, the AI substituted — restore the
+    original extracted name and mark the item as not_found.
+    """
+    not_found_extracted = [
+        r["extracted"] for r in catalog_results
+        if r["catalog_matches"].get("top_match_confidence", 0.0) < 0.50
+    ]
+    if not not_found_extracted:
+        return parsed
+
+    # Build (name, qty) pairs that are legitimately found in inventory so we never
+    # accidentally overwrite a correct match.
+    found_pairs: set[tuple] = set()
+    for r in catalog_results:
+        if r["catalog_matches"].get("top_match_confidence", 0.0) >= 0.80:
+            ext = r["extracted"]
+            ext_name = (ext.get("product") or "").lower()
+            ext_qty = ext.get("quantity")
+            found_pairs.add((ext_name, ext_qty))
+            match_list = r["catalog_matches"].get("matches", [])
+            if match_list:
+                found_pairs.add((match_list[0].get("product_name", "").lower(), ext_qty))
+
+    for tx in parsed.get("transactions", []):
+        items = tx.get("items") or []
+        used_not_found: set[str] = set()
+
+        for item in items:
+            if item.get("price_source") != "inventory":
+                continue
+            ai_name = (item.get("name") or "").lower().strip()
+            item_qty = item.get("quantity")
+            if item_qty is None:
+                continue
+
+            # Skip legitimately found products
+            if (ai_name, item_qty) in found_pairs:
+                continue
+
+            item_qty_f = float(item_qty)
+
+            for ext in not_found_extracted:
+                ext_name = (ext.get("product") or "").lower()
+                if ext_name in used_not_found:
+                    continue
+                ext_qty = ext.get("quantity")
+                if ext_qty is None:
+                    continue
+                if abs(float(ext_qty) - item_qty_f) > 0.01:
+                    continue
+                # Names must be genuinely different (not just minor casing/spacing)
+                if ext_name in ai_name or ai_name in ext_name:
+                    continue
+                # AI substituted — restore original name
+                _logger.warning(
+                    "Substitution guard: restored '%s' qty=%s → '%s' (not_found)",
+                    ai_name, item_qty, ext_name,
+                )
+                item["name"] = ext_name
+                item["rate_per_unit"] = None
+                item["price_source"] = "not_found"
+                item["subtotal"] = 0
+                used_not_found.add(ext_name)
+                break
+
+    return parsed
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 async def parse_message(
@@ -1093,13 +1200,14 @@ async def parse_message(
     # ── Steps 1 & 2: Product extraction + catalog matching ────────────────────
     # Run only when message contains item units (sale-like) and DB is available.
     product_context = ""
+    catalog_results: list[dict] = []  # kept for post-processing validation
     if db is not None and user_id is not None and _ITEM_UNITS.search(clean):
         try:
             extracted_items = await extract_products_from_text(message)
             _logger.debug("Step 1 extracted: %s", extracted_items)
 
             if extracted_items:
-                catalog_results: list[dict] = []
+                _catalog_results: list[dict] = []
                 for item in extracted_items:
                     product_name = item.get("product", "").strip()
                     if not product_name:
@@ -1112,8 +1220,9 @@ async def parse_message(
                         product_name,
                         catalog_data.get("top_match_confidence", 0.0),
                     )
-                    catalog_results.append({"extracted": item, "catalog_matches": catalog_data})
+                    _catalog_results.append({"extracted": item, "catalog_matches": catalog_data})
 
+                catalog_results = _catalog_results
                 product_context = _build_product_context_section(catalog_results)
         except Exception as exc:
             _logger.warning("Steps 1/2 product pipeline failed (non-fatal): %s", exc)
@@ -1184,6 +1293,10 @@ async def parse_message(
             parsed = _extract_json(raw)
 
             if parsed is not None:
+                # ── Product name substitution guard ───────────────────────────
+                if catalog_results:
+                    parsed = _fix_substituted_product_names(parsed, catalog_results)
+
                 # ── Bug 1 post-processing: Devanagari scan ────────────────────
                 if _any_devanagari(parsed):
                     _logger.warning(
@@ -1192,12 +1305,17 @@ async def parse_message(
                     regen = await _regen_without_devanagari(messages, raw)
                     if regen is not None and not _any_devanagari(regen):
                         _logger.debug("Regeneration succeeded — Devanagari removed")
+                        if catalog_results:
+                            regen = _fix_substituted_product_names(regen, catalog_results)
                         return regen
                     # Regeneration still had Devanagari or failed — strip characters
                     _logger.warning(
                         "Regeneration did not fully remove Devanagari — stripping characters"
                     )
-                    return _strip_devanagari_from_parsed(regen if regen is not None else parsed)
+                    stripped = _strip_devanagari_from_parsed(regen if regen is not None else parsed)
+                    if catalog_results:
+                        stripped = _fix_substituted_product_names(stripped, catalog_results)
+                    return stripped
 
                 return parsed
 

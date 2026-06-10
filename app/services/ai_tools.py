@@ -143,6 +143,29 @@ _PRODUCT_ALIASES: dict[str, str] = {
     "minket chawal": "minket rice", "minketa": "minket rice",
     "minketa rice": "minket rice", "mini keta": "minket rice",
 
+    # ── Mingat Rice (distinct variety, not a typo of minket) ──────────────────
+    "mingat": "mingat rice", "mingat rice": "mingat rice",
+    "minget": "mingat rice", "minget rice": "mingat rice",
+    "mingat chawal": "mingat rice", "minget chawal": "mingat rice",
+
+    # ── Trade Rice ────────────────────────────────────────────────────────────
+    "trade rice": "trade rice", "trade chawal": "trade rice",
+    "tred rice": "trade rice", "traid rice": "trade rice",
+
+    # ── Wada Kolam Rice ───────────────────────────────────────────────────────
+    "wada kolam": "wada kolam rice", "vada kolam": "wada kolam rice",
+    "wada kolam rice": "wada kolam rice", "vada kolam rice": "wada kolam rice",
+    "wada kolam chawal": "wada kolam rice", "vada kolam chawal": "wada kolam rice",
+    "sriram wada kolam": "wada kolam rice",
+    "sriram wada kolam rice": "wada kolam rice",
+
+    # ── Kali Moong Rice ───────────────────────────────────────────────────────
+    "kali moong": "kali moong rice", "kaali moong": "kali moong rice",
+    "kali moong rice": "kali moong rice", "kaali moong rice": "kali moong rice",
+    "kali moong chawal": "kali moong rice", "kaali moong chawal": "kali moong rice",
+    "kali mooch rice": "kali moong rice",    # common transliteration error
+    "black moong rice": "kali moong rice",
+
     # ── Yellow Rice ───────────────────────────────────────────────────────────
     "yellow rice": "yellow rice", "yellow chawal": "yellow rice",
     "pila chawal": "yellow rice", "peela chawal": "yellow rice",
