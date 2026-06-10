@@ -798,48 +798,6 @@ async def handle_message(
 
     pending_clarification = _get_pending_clarification(recent_logs)
 
-    # ── Amount-clarification short-circuit ────────────────────────────────────
-    # When the previous bot question asked for payment amount ("Kitna paisa mila?")
-    # and the user replies with a plain number, the AI re-interprets the bare number
-    # as a new standalone "payment" transaction and loses the sale context (items,
-    # quantities, customer). Instead, we bypass the AI here: inject the stated amount
-    # directly into the pending sale from the logged context and route to _process_tx.
-    _amount_q_pattern = re.compile(
-        r"kitna\s+paisa|paisa.*mila|paisa.*batao|amount.*batao|kitna.*mila",
-        re.IGNORECASE,
-    )
-    if pending_clarification:
-        _prev_q = pending_clarification.get("assistant_question", "")
-        if _amount_q_pattern.search(_prev_q):
-            _num_match = re.search(r"\b(\d+(?:\.\d+)?)\b", raw_message)
-            if _num_match:
-                _stated_amount = float(_num_match.group(1))
-                _full_resp = pending_clarification.get("full_ai_response") or {}
-                _prev_txs = _full_resp.get("transactions") or []
-                _pending_sale = next(
-                    (t for t in _prev_txs if t.get("type") == "sale"),
-                    None,
-                )
-                if _pending_sale:
-                    _total = float(_pending_sale.get("total_amount") or 0)
-                    _completed_tx = {
-                        **_pending_sale,
-                        "amount_paid": _stated_amount,
-                        "pending_amount": max(0.0, _total - _stated_amount),
-                        "is_credit": _stated_amount < _total,
-                    }
-                    _r_str, _detail, _clarification_resp = await _process_tx(
-                        db, user_id, _completed_tx
-                    )
-                    if _clarification_resp is not None:
-                        _log_resp = {
-                            **_full_resp,
-                            "clarification_needed": _clarification_resp.clarification_needed,
-                        }
-                        await _log(db, user_id, raw_message, _log_resp, _clarification_resp.reply)
-                        _clarification_resp.muril_analysis = muril_response
-                        return _clarification_resp
-
     client_hints: dict | None = None
     if raw_text or script or lang_hint:
         client_hints = {"raw_text": raw_text, "script": script, "lang_hint": lang_hint}
@@ -1055,33 +1013,6 @@ async def handle_message(
         reply = "Samajh nahi aaya, thoda clear likhiye"
         await _log(db, user_id, raw_message, parsed, reply)
         return ChatResponse(reply=reply, muril_analysis=muril_response)
-
-    # Guard: amount_paid MUST be explicitly stated by the user.
-    # If the AI auto-filled amount_paid = total_amount (assuming full payment) but
-    # the user's message contains no explicit payment indicator, clear it so
-    # _process_tx fires the "Kitna paisa mila?" question before confirming the sale.
-    _explicit_payment_re = re.compile(
-        r"(?:"
-        r"(?:Rs?\.?\s*)?\d+(?:\.\d+)?\s*(?:rupaye?|rs\.?|/-)\b"               # Rs 500, 500 rupaye
-        r"|(?:Rs?\.?\s*)?\d+(?:\.\d+)?\s*(?:mila|mile|paid|diya|diye|dia)\b"  # 500 mila, 500 diya
-        r"|\b(?:diya|mila|mile)\s+(?:Rs?\.?\s*)?\d+(?:\.\d+)?\b"              # diya 500, mila 500
-        r"|\b\d+(?:\.\d+)?\s*(?:rs|rupaye|/-)\b"                               # 500 rs
-        r"|\b(?:poora|saara|full|sab|pura)\s*(?:diya|paid|payment|kar|ho\s+gaya)?\b"  # poora diya / poora
-        r"|\b(?:cash|online|upi|gpay|phonepe|paytm|neft|bhim)\b"               # payment method
-        r")",
-        re.IGNORECASE,
-    )
-    _payment_stated = bool(_explicit_payment_re.search(raw_message))
-    if not _payment_stated:
-        transactions = [
-            {**tx, "amount_paid": None, "pending_amount": None, "is_credit": False}
-            if (
-                tx.get("type") == "sale"
-                and tx.get("amount_paid") is not None
-            )
-            else tx
-            for tx in transactions
-        ]
 
     # When resolving a pending clarification, only process the first transaction.
     if pending_clarification and len(transactions) > 1:
