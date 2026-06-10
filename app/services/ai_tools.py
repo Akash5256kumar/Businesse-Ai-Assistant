@@ -72,6 +72,11 @@ _PRODUCT_ALIASES: dict[str, str] = {
     "sonamasuri": "sona masoori rice", "sona masuri rice": "sona masoori rice",
     "sona masoori chawal": "sona masoori rice",
     "sona masuri chawal": "sona masoori rice",
+    # Spoken/regional variants of Masoori (mansouri, mansuri, masuri)
+    "mansouri": "sona masoori rice", "mansouri rice": "sona masoori rice",
+    "mansouri chawal": "sona masoori rice",
+    "mansuri": "sona masoori rice", "mansuri rice": "sona masoori rice",
+    "mansoor rice": "sona masoori rice", "masuri rice": "sona masoori rice",
 
     # ── Kolam Rice ───────────────────────────────────────────────────────────
     "kolam": "kolam rice", "kolam chawal": "kolam rice",
@@ -132,6 +137,15 @@ _PRODUCT_ALIASES: dict[str, str] = {
 
     # ── Jasmine Rice ──────────────────────────────────────────────────────────
     "jasmine rice": "jasmine rice", "jasmine chawal": "jasmine rice",
+
+    # ── Minket / Minketa Rice ─────────────────────────────────────────────────
+    "minket": "minket rice", "minket rice": "minket rice",
+    "minket chawal": "minket rice", "minketa": "minket rice",
+    "minketa rice": "minket rice", "mini keta": "minket rice",
+
+    # ── Yellow Rice ───────────────────────────────────────────────────────────
+    "yellow rice": "yellow rice", "yellow chawal": "yellow rice",
+    "pila chawal": "yellow rice", "peela chawal": "yellow rice",
 
     # ── Premium / Short-grain / Long-grain ────────────────────────────────────
     "premium rice": "premium rice", "premium chawal": "premium rice",

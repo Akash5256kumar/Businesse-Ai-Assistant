@@ -57,7 +57,7 @@ def _strip_devanagari_from_parsed(data: Any) -> Any:
 # ── Bug 2 Step 1: Dedicated product name extraction ───────────────────────────
 
 _PRODUCT_EXTRACT_SYSTEM = """\
-Extract product items from a Hindi/Hinglish shop order.
+Extract product items from a Hindi/Hinglish/Devanagari shop order.
 Return ONLY valid JSON — no extra text.
 
 {"items": [{"product": "<clean_name>", "quantity": <number_or_null>, "unit": "<unit_or_null>"}]}
@@ -67,13 +67,27 @@ Rules for product:
   - Strip ALL filler words: bhai, de do, wala, please, yaar, dena, lena, dijiye, chahiye, hai, etc.
   - Strip customer names, pronouns, verbs, instructions
   - Keep ONLY the product commodity name (e.g. atta, chawal, daal, paneer)
+  ⛔ VERBATIM EXTRACTION — MOST IMPORTANT RULE:
+     Extract the product name EXACTLY as the user said it. Do NOT rename, translate, or
+     substitute with a "more common" product name from your training knowledge.
+     The inventory system will identify the correct match — your job is only to extract.
+  ✓ "minket rice" → product: "minket rice"   (NOT "brown rice" or "white rice")
+  ✓ "mansouri rice" → product: "mansouri rice"  (NOT "masoori rice" or "brown rice")
+  ✓ "yellow rice" → product: "yellow rice"   (NOT "basmati rice")
+  ✓ "rajbhog rice" → product: "rajbhog rice" (NOT "basmati rice")
+  ✓ "mogra rice" → product: "mogra rice"     (NOT "broken rice" or "white rice")
+  If you don't recognise a product name → extract it verbatim. Never substitute.
 
 Rules for quantity:
   - Extract the numeric value (e.g. "5 kilo" → 5, "2 dozen" → 2)
+  - Spoken Hindi number words → convert to digits:
+    five/paanch/पाँच=5  seven/saat/सात=7  ten/das/दस=10  fifteen/pandrah/पंद्रह=15
+    twenty/bees/बीस=20  fifty/pachaas/पचास=50  hundred/sow/sau/सौ=100
+    Compound: "सट्टाईस सौ पचास" = 27×100+50 = 2750  |  "saat sow pachaas" = 750
   - null if no quantity mentioned
 
 Rules for unit:
-  - Normalize: kilo/kilogram → kg | gram/grams → g | litre/liter/ltr → litre
+  - Normalize: kilo/kilogram/केजी/किलो → kg | gram/grams → g | litre/liter/ltr → litre
   - piece/pcs/pc → piece | dozen → dozen | packet/pack → packet
   - null if no unit mentioned
 
@@ -82,6 +96,7 @@ Examples:
 "Raju ko 2kg chawal 1kg daal diya" → {"items":[{"product":"chawal","quantity":2,"unit":"kg"},{"product":"daal","quantity":1,"unit":"kg"}]}
 "paneer dena" → {"items":[{"product":"paneer","quantity":null,"unit":null}]}
 "rice, sugar, aata leke gaya — 5kg each" → {"items":[{"product":"rice","quantity":5,"unit":"kg"},{"product":"sugar","quantity":5,"unit":"kg"},{"product":"aata","quantity":5,"unit":"kg"}]}
+"Keshav ne rajbhog rice liya five kg, seven kg minket rice liya" → {"items":[{"product":"rajbhog rice","quantity":5,"unit":"kg"},{"product":"minket rice","quantity":7,"unit":"kg"}]}
 """
 
 
@@ -387,6 +402,18 @@ AUTO PRICE FETCHING — CRITICAL
 ══════════════════════════════════════════════
 ⚠ ABSOLUTE RULE: NEVER ASK THE USER FOR PRICE OR RATE OF ANY PRODUCT.
 All product prices MUST come from the database. No exceptions. No workarounds.
+
+⛔ PRODUCT NAME INTEGRITY — HARDEST RULE (read before every tool call):
+  When calling get_recent_price, use the EXACT product name the user said.
+  NEVER rename, translate, substitute, or "correct" a product name using your training knowledge.
+  The inventory system handles matching — your job is to pass the verbatim name.
+  ✓ User says "minket rice"    → call get_recent_price("minket rice")
+  ✓ User says "mansouri rice"  → call get_recent_price("mansouri rice")
+  ✓ User says "yellow rice"    → call get_recent_price("yellow rice")
+  ✓ User says "rajbhog"        → call get_recent_price("rajbhog")
+  ⛔ NEVER call get_recent_price("brown rice") when user said "minket rice"
+  ⛔ NEVER call get_recent_price("basmati rice") when user said "mansouri rice"
+  Substituting product names causes wrong prices and corrupts the transaction record.
 
 ⛔ HARD INVENTORY RULE — read carefully:
   A sale can ONLY proceed when EVERY product is confirmed to exist in the inventory database.
@@ -761,10 +788,106 @@ STRICT RULES — READ ALL CAREFULLY
 
 # ── Preprocessing ─────────────────────────────────────────────────────────────
 
+# Spoken Hindi number words → digit strings (used in _preprocess).
+# Applied in order: higher-value words first so "bees" isn't eaten before "biswan".
+_HINDI_ONES = {
+    "ek":"1","do":"2","teen":"3","char":"4","paanch":"5","chhe":"6","saat":"7",
+    "aath":"8","nau":"9","das":"10","gyarah":"11","barah":"12","terah":"13",
+    "chaudah":"14","pandrah":"15","solah":"16","satrah":"17","atharah":"18",
+    "unnis":"19","bees":"20","ikkees":"21","baais":"22","teis":"23","chaubees":"24",
+    "pachees":"25","chhabbees":"26","sattaais":"27","athaais":"28","untees":"29",
+    "tees":"30","ikattees":"31","battees":"32","taintees":"33","chautees":"34",
+    "paintees":"35","chhattees":"36","saintees":"37","artees":"38","untaalis":"39",
+    "chaalees":"40","ikatalis":"41","bayalis":"42","taintalis":"43","chawalis":"44",
+    "paintalis":"45","chhiyalis":"46","saintalis":"47","artalis":"48","unchaas":"49",
+    "pachaas":"50","ikyawan":"51","baawan":"52","tirpan":"53","chawwan":"54",
+    "pachpan":"55","chhappan":"56","sattawan":"57","athawan":"58","unsath":"59",
+    "saath":"60","iksath":"61","basath":"62","tirsath":"63","chausath":"64",
+    "painsath":"65","chhiyasath":"66","sarsath":"67","arsath":"68","unhattar":"69",
+    "sattar":"70","ikattar":"71","bahattar":"72","tihattar":"73","chauhattar":"74",
+    "pachhattar":"75","chhihattar":"76","satattar":"77","atattar":"78","unasi":"79",
+    "assi":"80","ikyaasi":"81","bayaasi":"82","tiraasi":"83","chauraasi":"84",
+    "pachaasi":"85","chhiyaasi":"86","sataasi":"87","ataasi":"88","nawaasi":"89",
+    "nabbe":"90","ikyaanwe":"91","baanwe":"92","tiraanwe":"93","chauraanwe":"94",
+    "panchaanwe":"95","chhiyaanwe":"96","sataanwe":"97","ataanwe":"98","ninyaanwe":"99",
+}
+_HINDI_SCALE = {
+    r"\bsou?\b": "100", r"\bsow\b": "100", r"\bsauw\b": "100",
+    r"\bhazar\b": "1000", r"\bhazaar\b": "1000",
+    r"\blakh\b": "100000", r"\blac\b": "100000",
+}
+
+
+def _resolve_spoken_numbers(text: str) -> str:
+    """
+    Collapse number sequences produced by Hindi word→digit substitution.
+    Handles the most common spoken patterns used in Indian retail:
+      "27 100 50"  → 2750   (sattaais sow pachaas)
+      "7 100 50"   → 750    (saat sow pachaas)
+      "3 1000"     → 3000   (teen hazaar)
+      "3 1000 500" → 3500   (teen hazaar paanch sow)
+    Applied repeatedly until stable so nested compounds collapse fully.
+    """
+    for _ in range(4):
+        prev = text
+        # N × 1000 + M × 100 + R  (e.g. "3 1000 7 100 50" → 3750)
+        text = re.sub(
+            r"\b(\d+)\s+1000\s+(\d+)\s+100\s+(\d+)\b",
+            lambda m: str(int(m.group(1))*1000 + int(m.group(2))*100 + int(m.group(3))),
+            text,
+        )
+        # N × 1000 + implicit 1×100 + R  (e.g. "3 1000 100 50" → 3150)
+        text = re.sub(
+            r"\b(\d+)\s+1000\s+100\s+(\d+)\b",
+            lambda m: str(int(m.group(1))*1000 + 100 + int(m.group(2))),
+            text,
+        )
+        # N × 1000 + implicit 1×100  (e.g. "3 1000 100" → 3100)
+        text = re.sub(
+            r"\b(\d+)\s+1000\s+100\b",
+            lambda m: str(int(m.group(1))*1000 + 100),
+            text,
+        )
+        # N × 1000 + R  (e.g. "3 1000 50" → 3050)
+        text = re.sub(
+            r"\b(\d+)\s+1000\s+(\d+)\b",
+            lambda m: str(int(m.group(1))*1000 + int(m.group(2))),
+            text,
+        )
+        # N × 1000  (e.g. "3 1000" → 3000)
+        text = re.sub(
+            r"\b(\d+)\s+1000\b",
+            lambda m: str(int(m.group(1))*1000),
+            text,
+        )
+        # N × 100 + R  (e.g. "27 100 50" → 2750)
+        text = re.sub(
+            r"\b(\d+)\s+100\s+(\d+)\b",
+            lambda m: str(int(m.group(1))*100 + int(m.group(2))),
+            text,
+        )
+        # N × 100  (e.g. "27 100" → 2700)
+        text = re.sub(
+            r"\b(\d+)\s+100\b",
+            lambda m: str(int(m.group(1))*100),
+            text,
+        )
+        if text == prev:
+            break
+    return text
+
+
 def _preprocess(message: str) -> str:
     text = message.strip()
     text = re.sub(r"₹\s*", "Rs ", text)
     text = re.sub(r"\b(rs\.?|inr)\s*", "Rs ", text, flags=re.IGNORECASE)
+    # Convert spoken Hindi number words to digits
+    for word, digit in sorted(_HINDI_ONES.items(), key=lambda x: -len(x[0])):
+        text = re.sub(rf"\b{word}\b", digit, text, flags=re.IGNORECASE)
+    for pattern, digit in _HINDI_SCALE.items():
+        text = re.sub(pattern, digit, text, flags=re.IGNORECASE)
+    # Collapse "27 100 50" → "2750" etc.
+    text = _resolve_spoken_numbers(text)
     text = re.sub(r"\s+", " ", text)
     return text
 
