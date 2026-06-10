@@ -1020,11 +1020,12 @@ async def handle_message(
     # _process_tx fires the "Kitna paisa mila?" question before confirming the sale.
     _explicit_payment_re = re.compile(
         r"(?:"
-        r"(?:Rs?\.?\s*)?\d+(?:\.\d+)?\s*(?:rupaye?|rs\.?|/-)\b"          # Rs 500, 500 rupaye
-        r"|(?:Rs?\.?\s*)?\d+(?:\.\d+)?\s*(?:mila|mile|paid)\b"           # 500 mila, 500 paid
-        r"|\b\d+(?:\.\d+)?\s*(?:rs|rupaye|/-)\b"                          # 500 rs
-        r"|\b(?:poora|saara|full|sab|pura)\s+(?:diya|paid|payment|kar)\b" # poora diya
-        r"|\b(?:cash|online|upi|gpay|phonepe|paytm|neft|bhim)\b"          # payment method
+        r"(?:Rs?\.?\s*)?\d+(?:\.\d+)?\s*(?:rupaye?|rs\.?|/-)\b"               # Rs 500, 500 rupaye
+        r"|(?:Rs?\.?\s*)?\d+(?:\.\d+)?\s*(?:mila|mile|paid|diya|diye|dia)\b"  # 500 mila, 500 diya
+        r"|\b(?:diya|mila|mile)\s+(?:Rs?\.?\s*)?\d+(?:\.\d+)?\b"              # diya 500, mila 500
+        r"|\b\d+(?:\.\d+)?\s*(?:rs|rupaye|/-)\b"                               # 500 rs
+        r"|\b(?:poora|saara|full|sab|pura)\s*(?:diya|paid|payment|kar|ho\s+gaya)?\b"  # poora diya / poora
+        r"|\b(?:cash|online|upi|gpay|phonepe|paytm|neft|bhim)\b"               # payment method
         r")",
         re.IGNORECASE,
     )
