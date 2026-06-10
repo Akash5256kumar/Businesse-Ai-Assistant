@@ -1014,6 +1014,32 @@ async def handle_message(
         await _log(db, user_id, raw_message, parsed, reply)
         return ChatResponse(reply=reply, muril_analysis=muril_response)
 
+    # Guard: amount_paid MUST be explicitly stated by the user.
+    # If the AI auto-filled amount_paid = total_amount (assuming full payment) but
+    # the user's message contains no explicit payment indicator, clear it so
+    # _process_tx fires the "Kitna paisa mila?" question before confirming the sale.
+    _explicit_payment_re = re.compile(
+        r"(?:"
+        r"(?:Rs?\.?\s*)?\d+(?:\.\d+)?\s*(?:rupaye?|rs\.?|/-)\b"          # Rs 500, 500 rupaye
+        r"|(?:Rs?\.?\s*)?\d+(?:\.\d+)?\s*(?:mila|mile|paid)\b"           # 500 mila, 500 paid
+        r"|\b\d+(?:\.\d+)?\s*(?:rs|rupaye|/-)\b"                          # 500 rs
+        r"|\b(?:poora|saara|full|sab|pura)\s+(?:diya|paid|payment|kar)\b" # poora diya
+        r"|\b(?:cash|online|upi|gpay|phonepe|paytm|neft|bhim)\b"          # payment method
+        r")",
+        re.IGNORECASE,
+    )
+    _payment_stated = bool(_explicit_payment_re.search(raw_message))
+    if not _payment_stated:
+        transactions = [
+            {**tx, "amount_paid": None, "pending_amount": None, "is_credit": False}
+            if (
+                tx.get("type") == "sale"
+                and tx.get("amount_paid") is not None
+            )
+            else tx
+            for tx in transactions
+        ]
+
     # When resolving a pending clarification, only process the first transaction.
     if pending_clarification and len(transactions) > 1:
         transactions = transactions[:1]

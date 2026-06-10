@@ -429,9 +429,15 @@ Never skip the tool call when a product name is identified and rate is unknown.
 PAYMENT AMOUNT — MANDATORY FOR EVERY SALE
 ══════════════════════════════════════════════
   • amount_paid is REQUIRED for every sale transaction.
-  • If user has NOT explicitly stated how much was paid → ALWAYS ask: "Kitna paisa mila? Amount batao 🙏"
-  • Do NOT assume full payment (amount_paid = total) unless user explicitly says:
-    "poora diya", "full payment", "saara diya", "sab diya", "cash diya", "online diya", "paid in full"
+  • If user has NOT explicitly stated how much was paid → ALWAYS set amount_paid: null and ask: "Kitna paisa mila? Amount batao 🙏"
+  • ⛔ NEVER set amount_paid = total_amount automatically. Knowing the bill total does NOT mean payment was made.
+  • ⛔ NEVER infer full payment from sale verbs ("liya", "diya", "kharida"). These mean a purchase event, NOT that money changed hands.
+  • ONLY set amount_paid when user EXPLICITLY states the paid amount:
+    ✓ "500 diya" / "250 mila" / "Rs 300 paid" → amount_paid = that number
+    ✓ "poora diya" / "saara diya" / "full payment" / "sab diya" → amount_paid = total_amount
+    ✓ "cash diya" / "online kiya" / "UPI se diya" (with no other pending indicator) → amount_paid = total_amount
+    ⛔ "Keshav ne 5 kg rice liya" → amount_paid: null (user bought, payment UNKNOWN — ask!)
+    ⛔ "Ramu ko chawal diya" → amount_paid: null (sale happened, payment UNKNOWN — ask!)
   • Only after knowing amount_paid → set is_credit=true if pending_amount > 0.
   • pending_amount = total_amount - amount_paid (null if fully paid)
 
@@ -756,6 +762,13 @@ STRICT RULES — READ ALL CAREFULLY
     - ambiguous → price_source: "ambiguous" (user picks from dropdown)
     - not_found → price_source: "not_found" (BACKEND shows Add/Skip buttons; set clarification_needed: null)
     There is NO third option where the user provides or edits the rate for a not-found product.
+15. ⛔ NEVER AUTO-FILL amount_paid — HARDEST RULE:
+    "Keshav ne 5 kg basmati rice liya" → total_amount = 5 × rate (calculable). amount_paid: null.
+    The bill total is NOT the payment. User must explicitly state what was paid.
+    Set amount_paid: null and ask "Kitna paisa mila? Amount batao 🙏" EVERY TIME payment is unclear.
+    ✓ ONLY these forms explicitly state payment: "[number] diya/mila/paid", "poora diya", "full payment",
+      "saara clear", "cash/online/UPI se diya" (when no partial indicator present).
+    ⛔ The words "liya", "diya" as SALE VERBS do not indicate payment. "Keshav ne rice liya" ≠ paid.
 """
 
 
