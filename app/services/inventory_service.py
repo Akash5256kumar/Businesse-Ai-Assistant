@@ -80,8 +80,12 @@ def _match_score(query: str, candidate: str) -> float:
         # Each query word: find best matching candidate word by char similarity
         word_sims = [max(_char_sim(qw, cw) for cw in c_list) for qw in q_list]
         avg = sum(word_sims) / len(word_sims)
+        if avg >= 0.85:
+            # Very high char similarity (e.g. "basmti"↔"basmati", "sona masuri"↔"sona masoori")
+            # → return ≥ 0.80 so auto-select threshold is cleared without asking the user.
+            return 0.80 + (avg - 0.85) * 0.15  # 0.85→0.80, 1.0→0.8225
         if avg >= 0.75:
-            # Scale into (0.65, 0.70] so it clears the 0.70 match threshold
+            # Moderate similarity → score stays below auto-select; user picks from dropdown
             return 0.65 + avg * 0.07  # 0.75→0.7025, 1.0→0.72
 
     # Partial word overlap (weak signal)

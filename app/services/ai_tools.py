@@ -10,8 +10,19 @@ from app.services import inventory_service
 _logger = logging.getLogger(__name__)
 
 # ── Product name normalization ─────────────────────────────────────────────────
+#
+# Two-layer lookup:
+#   1. _PRODUCT_ALIASES  — exact phrase → canonical name
+#      Handles Hindi names, regional names, brand names, and known spellings.
+#   2. _WORD_SUBS        — word-by-word substitution for compound phrases
+#      Converts "basmati chawal" → "basmati rice" when "chawal"→"rice" is in the table.
+#      The result is then re-checked against _PRODUCT_ALIASES.
+#
+# After normalization the name is passed to inventory_service where _match_score
+# handles any remaining character-level typos (e.g. "basmti rice" → "basmati rice").
 
-_PRODUCT_NORMALIZATIONS: dict[str, str] = {
+_PRODUCT_ALIASES: dict[str, str] = {
+    # ── Vegetables ────────────────────────────────────────────────────────────
     "tamato": "tomato", "tamatar": "tomato", "tamaatar": "tomato",
     "vindi": "bhindi", "bindi": "bhindi",
     "aaloo": "aloo", "alu": "aloo",
@@ -23,12 +34,135 @@ _PRODUCT_NORMALIZATIONS: dict[str, str] = {
     "dhania": "coriander", "dhaniya": "coriander",
     "mirchi": "chilli", "hari mirchi": "green chilli",
     "nimbu": "lemon", "nimbo": "lemon",
+
+    # ── Generic rice / chawal ──────────────────────────────────────────────────
+    "chawal": "rice", "chaawal": "rice", "chavel": "rice", "chawl": "rice",
+    "chawal rice": "rice",
+
+    # ── Basmati Rice ──────────────────────────────────────────────────────────
+    "basmati": "basmati rice",
+    "basmaati": "basmati rice", "basmti": "basmati rice",
+    "basmati chawal": "basmati rice", "basmti chawal": "basmati rice",
+    "long grain rice": "basmati rice",
+
+    # ── Aged / Extra-aged Basmati ─────────────────────────────────────────────
+    "aged basmati": "aged basmati rice",
+    "extra aged basmati": "aged basmati rice",
+
+    # ── Mini Basmati ──────────────────────────────────────────────────────────
+    "mini basmati": "mini basmati rice",
+    "mini basmti": "mini basmati rice",
+    "mini basmati chawal": "mini basmati rice",
+
+    # ── Rajbhog Rice ─────────────────────────────────────────────────────────
+    "rajbhog": "rajbhog rice", "raj bhog": "rajbhog rice",
+    "rajbhog chawal": "rajbhog rice", "raj bhog chawal": "rajbhog rice",
+
+    # ── Dubar Rice ───────────────────────────────────────────────────────────
+    "dubar": "dubar rice", "dubra": "dubar rice", "dubara": "dubar rice",
+    "dubar chawal": "dubar rice", "dubra chawal": "dubar rice",
+
+    # ── Rozana Rice ──────────────────────────────────────────────────────────
+    "rozana": "rozana rice", "rosana": "rozana rice",
+    "rozana chawal": "rozana rice",
+
+    # ── Sona Masoori Rice ─────────────────────────────────────────────────────
+    "sona masoori": "sona masoori rice", "sona masuri": "sona masoori rice",
+    "sona masoor": "sona masoori rice", "sonamasoori": "sona masoori rice",
+    "sonamasuri": "sona masoori rice", "sona masuri rice": "sona masoori rice",
+    "sona masoori chawal": "sona masoori rice",
+    "sona masuri chawal": "sona masoori rice",
+
+    # ── Kolam Rice ───────────────────────────────────────────────────────────
+    "kolam": "kolam rice", "kolam chawal": "kolam rice",
+    "lachkari kolam": "lachkari kolam rice",
+    "lachkari kolam chawal": "lachkari kolam rice",
+
+    # ── Jeera Rice ───────────────────────────────────────────────────────────
+    "jeera rice": "jeera rice", "jeera chawal": "jeera rice",
+    "jeerakasala": "jeerakasala rice", "jeera kasala": "jeerakasala rice",
+
+    # ── Gobindobhog Rice ──────────────────────────────────────────────────────
+    "gobindobhog": "gobindobhog rice", "gobindo bhog": "gobindobhog rice",
+    "gobindobhog chawal": "gobindobhog rice",
+
+    # ── HMT Rice ─────────────────────────────────────────────────────────────
+    "hmt": "hmt rice", "hmt chawal": "hmt rice",
+
+    # ── IR64 Rice ────────────────────────────────────────────────────────────
+    "ir64": "ir64 rice", "ir 64": "ir64 rice", "ir64 chawal": "ir64 rice",
+
+    # ── Swarna Rice ──────────────────────────────────────────────────────────
+    "swarna": "swarna rice", "swarna chawal": "swarna rice",
+
+    # ── Ponni Rice ───────────────────────────────────────────────────────────
+    "ponni": "ponni rice", "ponni chawal": "ponni rice",
+
+    # ── Matta Rice ───────────────────────────────────────────────────────────
+    "matta": "matta rice", "matta chawal": "matta rice",
+    "kerala matta": "matta rice",
+
+    # ── Sharbati Rice ─────────────────────────────────────────────────────────
+    "sharbati": "sharbati rice", "sharbati chawal": "sharbati rice",
+    "shabati": "sharbati rice", "shabati rice": "sharbati rice",
+
+    # ── Sugandha Rice ─────────────────────────────────────────────────────────
+    "sugandha": "sugandha rice", "sugandha chawal": "sugandha rice",
+
+    # ── Mogra Rice ───────────────────────────────────────────────────────────
+    "mogra": "mogra rice", "mogra chawal": "mogra rice",
+
+    # ── Tukda / Broken Rice ───────────────────────────────────────────────────
+    "tukda": "tukda rice", "tukda chawal": "tukda rice",
+    "broken rice": "tukda rice", "tuta chawal": "tukda rice",
+
+    # ── Golden Sella / White Sella ────────────────────────────────────────────
+    "golden sella": "golden sella rice", "golden sella chawal": "golden sella rice",
+    "white sella": "white sella rice", "white sella chawal": "white sella rice",
+
+    # ── Brown Rice ───────────────────────────────────────────────────────────
+    "brown rice": "brown rice", "brown chawal": "brown rice",
+
+    # ── Steam / Raw / Parboiled Rice ──────────────────────────────────────────
+    "steam rice": "steam rice", "steam chawal": "steam rice",
+    "steamed rice": "steam rice",
+    "raw rice": "raw rice", "kaccha chawal": "raw rice",
+    "parboiled rice": "parboiled rice", "usna chawal": "parboiled rice",
+    "sela rice": "parboiled rice", "sela chawal": "parboiled rice",
+
+    # ── Jasmine Rice ──────────────────────────────────────────────────────────
+    "jasmine rice": "jasmine rice", "jasmine chawal": "jasmine rice",
+
+    # ── Premium / Short-grain / Long-grain ────────────────────────────────────
+    "premium rice": "premium rice", "premium chawal": "premium rice",
+    "short grain rice": "short grain rice",
+}
+
+# Word-level substitutions applied to each word in compound names that
+# don't appear as an exact phrase in _PRODUCT_ALIASES.
+_WORD_SUBS: dict[str, str] = {
+    "chawal": "rice", "chaawal": "rice", "chavel": "rice", "chawl": "rice",
+    "tel": "oil", "sarson": "mustard", "sarsoon": "mustard",
+    "daal": "dal", "dhal": "dal",
+    "aatta": "atta",
 }
 
 
 def _normalize_product_name(name: str) -> str:
     lower = name.lower().strip()
-    return _PRODUCT_NORMALIZATIONS.get(lower, lower)
+    # 1. Exact phrase lookup
+    if lower in _PRODUCT_ALIASES:
+        return _PRODUCT_ALIASES[lower]
+    # 2. Word-level substitution for compound names ("basmati chawal" → "basmati rice")
+    words = lower.split()
+    if len(words) > 1:
+        substituted = " ".join(_WORD_SUBS.get(w, w) for w in words)
+        if substituted != lower:
+            # Re-check aliases with substituted form
+            if substituted in _PRODUCT_ALIASES:
+                return _PRODUCT_ALIASES[substituted]
+            return substituted
+    return lower
 
 
 # ── OpenAI tool definitions ───────────────────────────────────────────────────
