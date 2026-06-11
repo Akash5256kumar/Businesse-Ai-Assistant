@@ -232,7 +232,7 @@ def _build_product_context_section(catalog_results: list[dict]) -> str:
         unit_str = f" unit={unit}" if unit else ""
         lines.append(f"  '{product}'{qty_str}{unit_str}:")
 
-        if top_conf >= 0.90 and match_list:
+        if top_conf >= 0.80 and match_list:
             best = match_list[0]
             price = best.get("last_sale_price") or best.get("last_purchase_price")
             price_str = f"Rs{price}" if price else "no price stored"
@@ -1202,7 +1202,7 @@ def _fix_substituted_product_names(parsed: dict, catalog_results: list[dict]) ->
     # accidentally overwrite a correct match.
     found_pairs: set[tuple] = set()
     for r in catalog_results:
-        if r["catalog_matches"].get("top_match_confidence", 0.0) >= 0.90:
+        if r["catalog_matches"].get("top_match_confidence", 0.0) >= 0.80:
             ext = r["extracted"]
             ext_name = (ext.get("product") or "").lower()
             ext_qty = ext.get("quantity")
@@ -1272,7 +1272,7 @@ async def parse_message(
     Full pipeline:
       Step 0  — Regex fast-path (simple queries / payments / expenses).
       Step 1  — Dedicated product-name extraction from raw transcription (sale messages).
-      Step 2  — Catalog fuzzy-match for each extracted product (≥ 0.90 → FOUND, else AMBIGUOUS).
+      Step 2  — Catalog fuzzy-match for each extracted product (≥ 0.80 → FOUND, else AMBIGUOUS).
                Context injected into LLM system prompt.
       Step 3  — LLM parse with tool calling (get_recent_price / get_stock / etc.).
       Post    — Devanagari scan: regenerate or strip if any Devanagari found.

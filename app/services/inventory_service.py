@@ -194,7 +194,7 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
       2. Past transactions — most recent rate_per_unit from sale/purchase items.
          Tie-break by frequency (most-ordered product wins).
     """
-    _AUTO_THRESHOLD = 0.90   # ≥ 0.90 → high-confidence auto-proceed; 0.70–0.89 → AMBIGUOUS dropdown
+    _AUTO_THRESHOLD = 0.80   # ≥ 0.80 → high-confidence auto-proceed; 0.70–0.79 → AMBIGUOUS dropdown
     _FUZZY_THRESHOLD = 0.70
 
     # ── Source 1: Inventory table ─────────────────────────────────────────────
@@ -311,8 +311,8 @@ async def find_product_catalog_matches(
     as the fuzzy-string matching component.  Returns top-k matches with confidence scores.
 
     Thresholds:
-      ≥ 0.90 → high confidence, safe to auto-proceed
-      0.50–0.89 → ambiguous, needs_clarification = True
+      ≥ 0.80 → high confidence, safe to auto-proceed
+      0.50–0.79 → ambiguous, needs_clarification = True
       < 0.50 → not found, product_not_found = True
     """
     inv_result = await db.execute(select(Inventory).where(Inventory.user_id == user_id))
@@ -349,7 +349,7 @@ async def find_product_catalog_matches(
     return {
         "top_match_confidence": top_confidence,
         "matches": matches,
-        "needs_clarification": 0.50 <= top_confidence < 0.90,
+        "needs_clarification": 0.50 <= top_confidence < 0.80,
         "product_not_found": top_confidence < 0.50,
     }
 
