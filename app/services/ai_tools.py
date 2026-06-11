@@ -72,9 +72,11 @@ _PRODUCT_ALIASES: dict[str, str] = {
     "sonamasuri": "sona masoori rice", "sona masuri rice": "sona masoori rice",
     "sona masoori chawal": "sona masoori rice",
     "sona masuri chawal": "sona masoori rice",
-    # Spoken/regional variants of Masoori (mansouri, mansuri, masuri)
+    # Spoken/regional variants of Masoori (mansouri, mansoori, mansuri, masuri)
     "mansouri": "sona masoori rice", "mansouri rice": "sona masoori rice",
     "mansouri chawal": "sona masoori rice",
+    "mansoori": "sona masoori rice", "mansoori rice": "sona masoori rice",
+    "mansoori chawal": "sona masoori rice",
     "mansuri": "sona masoori rice", "mansuri rice": "sona masoori rice",
     "mansoor rice": "sona masoori rice", "masuri rice": "sona masoori rice",
 

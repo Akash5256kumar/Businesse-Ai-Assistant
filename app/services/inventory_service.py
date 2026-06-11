@@ -66,8 +66,13 @@ def _match_score(query: str, candidate: str) -> float:
     # All query words in candidate and query is ≥ 60 % as long as candidate
     if q_words.issubset(c_words) and len(q) >= len(c) * 0.6:
         return 0.85
-    # All candidate words in query (e.g. "basmati rice 1kg" ↔ "basmati rice")
+    # All candidate words in query (e.g. "kali mooch rice" ↔ "kali mooch")
     if c_words.issubset(q_words):
+        extra = q_words - c_words
+        # User appended a generic grain suffix (very common in Hindi speech) — still a strong match
+        _GRAIN_SUFFIXES = {"rice", "chawal", "chaawal", "chawl", "grain"}
+        if extra and extra.issubset(_GRAIN_SUFFIXES):
+            return 0.92
         return 0.80
     # Single-word query matches a whole word in candidate
     if len(q_words) == 1 and q in c_words:

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.services.shop_context import get_shop_context
-from app.services.ai_tools import TOOLS, execute_tool
+from app.services.ai_tools import TOOLS, execute_tool, _normalize_product_name
 
 _logger = logging.getLogger(__name__)
 _client = AsyncOpenAI(api_key=settings.openai_api_key)
@@ -1300,12 +1300,16 @@ async def parse_message(
                     product_name = item.get("product", "").strip()
                     if not product_name:
                         continue
+                    # Normalize via alias library before catalog lookup so Step 2
+                    # benefits from the same aliases as Step 3's get_recent_price call.
+                    normalized = _normalize_product_name(product_name)
                     catalog_data = await _inventory_service.find_product_catalog_matches(
-                        db, user_id, product_name
+                        db, user_id, normalized
                     )
                     _logger.debug(
-                        "Step 2 catalog match for '%s': top_conf=%.2f",
+                        "Step 2 catalog match for '%s' (normalized: '%s'): top_conf=%.2f",
                         product_name,
+                        normalized,
                         catalog_data.get("top_match_confidence", 0.0),
                     )
                     _catalog_results.append({"extracted": item, "catalog_matches": catalog_data})
