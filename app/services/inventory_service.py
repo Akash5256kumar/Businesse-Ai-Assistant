@@ -82,7 +82,7 @@ def _match_score(query: str, candidate: str) -> float:
         avg = sum(word_sims) / len(word_sims)
         if avg >= 0.85:
             # Very high char similarity (e.g. "basmti"↔"basmati", "sona masuri"↔"sona masoori")
-            # → return ≥ 0.80 so auto-select threshold is cleared without asking the user.
+            # High char similarity — score in 0.80–0.82 range, below 0.90 auto-threshold → AMBIGUOUS.
             return 0.80 + (avg - 0.85) * 0.15  # 0.85→0.80, 1.0→0.8225
         if avg >= 0.75:
             # Moderate similarity → score stays below auto-select; user picks from dropdown
@@ -189,7 +189,7 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
       2. Past transactions — most recent rate_per_unit from sale/purchase items.
          Tie-break by frequency (most-ordered product wins).
     """
-    _AUTO_THRESHOLD = 0.80   # raised from 0.75 — must be high-confidence to auto-proceed
+    _AUTO_THRESHOLD = 0.90   # ≥ 0.90 → high-confidence auto-proceed; 0.70–0.89 → AMBIGUOUS dropdown
     _FUZZY_THRESHOLD = 0.70
 
     # ── Source 1: Inventory table ─────────────────────────────────────────────
@@ -306,8 +306,8 @@ async def find_product_catalog_matches(
     as the fuzzy-string matching component.  Returns top-k matches with confidence scores.
 
     Thresholds:
-      ≥ 0.80 → high confidence, safe to auto-proceed
-      0.50–0.79 → ambiguous, needs_clarification = True
+      ≥ 0.90 → high confidence, safe to auto-proceed
+      0.50–0.89 → ambiguous, needs_clarification = True
       < 0.50 → not found, product_not_found = True
     """
     inv_result = await db.execute(select(Inventory).where(Inventory.user_id == user_id))
@@ -344,7 +344,7 @@ async def find_product_catalog_matches(
     return {
         "top_match_confidence": top_confidence,
         "matches": matches,
-        "needs_clarification": 0.50 <= top_confidence < 0.80,
+        "needs_clarification": 0.50 <= top_confidence < 0.90,
         "product_not_found": top_confidence < 0.50,
     }
 

@@ -104,7 +104,7 @@ Rules for product:
   ✓ "galaxy 1121"       → product: "galaxy 1121"        ⛔ NOT "basmati rice" or "1121 rice"
   If you don't recognise a product name → TRANSLITERATE it phonetically. Never substitute.
 
-⚠ DEVANAGARI TRANSLITERATION — phonetic only, no substitution:
+⚠ DEVANAGARI TRANSLITERATION — phonetic only, ZERO substitution allowed:
   Transliterate Devanagari words to Roman script phonetically. NEVER substitute with similar names.
   "मिंगट"   → "mingat"    (NOT "minket", NOT "brown rice")
   "ट्रेड"    → "trade"     (NOT "brown rice")
@@ -113,9 +113,19 @@ Rules for product:
   "मूंग"    → "moong"     (NOT "mooch", NOT "mung")
   "मसूरी"   → "masuri"    (NOT "masoori" — but close is OK)
   "काली"    → "kali"
+  "मोंस"    → "mons"      (NOT "moong", NOT "mooch", NOT "brown", NOT "mons rice")
   "श्रीराम"  → "sriram"
   "ज़ीबा"   → "zeeba"     (NOT "jeba" or "jiba")
   "दिल्ली पसंद" → "delhi pasand"  (brand name — keep full)
+
+  ⛔ UNKNOWN DEVANAGARI WORD — MANDATORY FALLBACK RULE:
+     If you cannot identify a Devanagari word → break it into characters and transliterate phonetically.
+     Devanagari character map: म=m, ो=o, ं=n(nasal/anusvara), स=s, क=k, ा=a, ल=l, ि=i, र=r
+     Example: "मोंस" → म+ो+ं+स = m+o+n+s = "mons"
+     ⛔ FORBIDDEN: guessing semantics of an unknown word, e.g.:
+        "काली मोंस" ≠ "brown rice"   (काली=kali, मोंस=mons → "kali mons")
+        "काली मोंस" ≠ "black rice"   (काली is a product-name prefix here, NOT a color descriptor)
+        Unknown word + राइस ≠ "brown rice"  (only substitute if ब्राउन appears in the text)
 
 Rules for quantity:
   - Extract the numeric value (e.g. "5 kilo" → 5, "2 dozen" → 2)
@@ -154,6 +164,8 @@ Examples (Devanagari — transliterate verbatim, do NOT substitute):
 "सोना मसूरी राइस 15 केजी" → {"items":[{"product":"sona masuri rice","quantity":15,"unit":"kg"}]}
 "27 केजी ब्राउन राइस" → {"items":[{"product":"brown rice","quantity":27,"unit":"kg"}]}
 "4 केजी ब्लैक राइस" → {"items":[{"product":"black rice","quantity":4,"unit":"kg"}]}
+"5 केजी काली मोंस राइस" → {"items":[{"product":"kali mons rice","quantity":5,"unit":"kg"}]}
+"10 केजी मोंस राइस दिया" → {"items":[{"product":"mons rice","quantity":10,"unit":"kg"}]}
 """
 
 
@@ -214,7 +226,7 @@ def _build_product_context_section(catalog_results: list[dict]) -> str:
         unit_str = f" unit={unit}" if unit else ""
         lines.append(f"  '{product}'{qty_str}{unit_str}:")
 
-        if top_conf >= 0.80 and match_list:
+        if top_conf >= 0.90 and match_list:
             best = match_list[0]
             price = best.get("last_sale_price") or best.get("last_purchase_price")
             price_str = f"Rs{price}" if price else "no price stored"
@@ -243,6 +255,40 @@ def _build_product_context_section(catalog_results: list[dict]) -> str:
 
     lines.append("")
     return "\n".join(lines)
+
+
+# ── Devanagari substitution guard ─────────────────────────────────────────────
+# Step 1 LLM sometimes replaces unknown Devanagari words with generic English
+# product names (e.g. "काली मोंस" → "brown rice"). When this happens Step 2
+# confirms the wrong name with 100% confidence and the error propagates silently.
+# This filter discards any catalog pre-analysis entry whose extracted product name
+# is a known substitution target but whose required Devanagari/Latin indicator is
+# absent from the original message.  Without a pre-analysis entry the Step 3 AI
+# must call get_recent_price(), which goes through aliases + fuzzy matching.
+_DEVANAGARI_SUBSTITUTION_GUARDS: dict[str, list[str]] = {
+    "brown rice":   ["ब्राउन", "brown"],
+    "white rice":   ["व्हाइट", "वाइट", "white"],
+    "black rice":   ["ब्लैक", "black"],
+    "basmati rice": ["बासमती", "basmati"],
+}
+
+
+def _filter_devanagari_substitutions(
+    catalog_results: list[dict], original: str
+) -> list[dict]:
+    if not _DEVANAGARI_RE.search(original):
+        return catalog_results
+    lower_orig = original.lower()
+    filtered = []
+    for res in catalog_results:
+        product = (res.get("extracted", {}).get("product") or "").lower().strip()
+        required = _DEVANAGARI_SUBSTITUTION_GUARDS.get(product)
+        if required is not None and not any(ind.lower() in lower_orig for ind in required):
+            _logger.debug("substitution guard: dropping '%s' from pre-analysis", product)
+            continue
+        filtered.append(res)
+    return filtered
+
 
 # ── Regex helpers ────────────────────────────────────────────────────────────
 
@@ -475,6 +521,14 @@ All product prices MUST come from the database. No exceptions. No workarounds.
   ⛔ NEVER call get_recent_price("brown rice") when user said "minket rice"
   ⛔ NEVER call get_recent_price("basmati rice") when user said "mansouri rice"
   Substituting product names causes wrong prices and corrupts the transaction record.
+
+  ⛔ DEVANAGARI PRODUCT NAMES — phonetic transliteration, never semantic translation:
+     If the user's message contains Devanagari script, call get_recent_price with the
+     PHONETIC Roman transliteration of what was said — NEVER semantically interpret it.
+     ✓ "काली मोंस राइस"  → call get_recent_price("kali mons rice")   ⛔ NOT "brown rice"
+     ✓ "मंसूरी राइस"     → call get_recent_price("mansouri rice")     ⛔ NOT "masoori rice"
+     "काली" is a product-name prefix (transliterates to "kali"), NOT the English word "black" or "brown".
+     Unknown Devanagari word + राइस (rice) does NOT mean "brown rice" — transliterate it phonetically.
 
 ⛔ HARD INVENTORY RULE — read carefully:
   A sale can ONLY proceed when EVERY product is confirmed to exist in the inventory database.
@@ -1142,7 +1196,7 @@ def _fix_substituted_product_names(parsed: dict, catalog_results: list[dict]) ->
     # accidentally overwrite a correct match.
     found_pairs: set[tuple] = set()
     for r in catalog_results:
-        if r["catalog_matches"].get("top_match_confidence", 0.0) >= 0.80:
+        if r["catalog_matches"].get("top_match_confidence", 0.0) >= 0.90:
             ext = r["extracted"]
             ext_name = (ext.get("product") or "").lower()
             ext_qty = ext.get("quantity")
@@ -1212,7 +1266,7 @@ async def parse_message(
     Full pipeline:
       Step 0  — Regex fast-path (simple queries / payments / expenses).
       Step 1  — Dedicated product-name extraction from raw transcription (sale messages).
-      Step 2  — Catalog fuzzy-match for each extracted product (≥ 0.80 confidence).
+      Step 2  — Catalog fuzzy-match for each extracted product (≥ 0.90 → FOUND, else AMBIGUOUS).
                Context injected into LLM system prompt.
       Step 3  — LLM parse with tool calling (get_recent_price / get_stock / etc.).
       Post    — Devanagari scan: regenerate or strip if any Devanagari found.
@@ -1256,7 +1310,7 @@ async def parse_message(
                     )
                     _catalog_results.append({"extracted": item, "catalog_matches": catalog_data})
 
-                catalog_results = _catalog_results
+                catalog_results = _filter_devanagari_substitutions(_catalog_results, message)
                 product_context = _build_product_context_section(catalog_results)
         except Exception as exc:
             _logger.warning("Steps 1/2 product pipeline failed (non-fatal): %s", exc)
