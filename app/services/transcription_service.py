@@ -29,4 +29,3 @@ async def transcribe_audio(file: UploadFile) -> str:
         )
 
     return response.json().get("text", "")
-    

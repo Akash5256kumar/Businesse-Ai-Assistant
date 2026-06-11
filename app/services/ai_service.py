@@ -64,21 +64,44 @@ Return ONLY valid JSON — no extra text.
 
 Rules for product:
   - Lowercase only
-  - Strip ALL filler words: bhai, de do, wala, please, yaar, dena, lena, dijiye, chahiye, hai, etc.
-  - Strip customer names, pronouns, verbs, instructions
-  - Keep ONLY the product commodity name (e.g. atta, chawal, daal, paneer)
+  - Strip ONLY filler/action words: bhai, de do, wala, please, yaar, dena, lena, dijiye,
+    chahiye, hai, ko, ne, ka, ki, ke, liya, diya, le gaya, aur, and, etc.
+  - Strip pronouns and pure verbs — but NEVER strip brand names or product model names.
+  - Keep the FULL product name — brand prefix + variety name + model suffix.
+    e.g. "Delhi Pasand Easy" → product: "delhi pasand easy"  (keep all 3 words)
+         "Galaxy 1121"       → product: "galaxy 1121"        (keep brand + model number)
+         "Biryani King No.1 Jammuni" → product: "biryani king no.1 jammuni"
+
+  ⛔ BRAND NAME RULE — CRITICAL:
+     Brand names are NOT customer names. NEVER strip brand words.
+     Words like "Delhi Pasand", "Zeeba", "Patanjali", "India Gate", "Aeroplane",
+     "Kitchen Champion", "Patliputra Farm", "Biryani King" etc. are product brands — keep them.
+     A customer name appears BEFORE "ne/ko" in the sentence. The product name appears AFTER.
+     ✓ "Keshav ne Delhi Pasand Easy 5kg liya" → customer=Keshav, product="delhi pasand easy"
+     ✓ "Rahul ko Galaxy 1121 10kg diya"       → customer=Rahul, product="galaxy 1121"
+
+  ⛔ ABBREVIATION RULE:
+     Short brand codes are valid product names — keep them verbatim.
+     ✓ "dp easy 5kg"     → product: "dp easy"     (dp = brand abbreviation)
+     ✓ "bk saffron 10kg" → product: "bk saffron"  (bk = brand abbreviation)
+     ✓ "ig kolam 25kg"   → product: "ig kolam"    (ig = brand abbreviation)
+     NEVER expand or guess what an abbreviation means — pass it through as-is.
+
   ⛔ VERBATIM EXTRACTION — ABSOLUTE RULE (applies to ALL input including Devanagari):
      Extract the product name EXACTLY as the user said it. Do NOT rename, translate, or
      substitute with a "more common" product name from your training knowledge.
      The inventory system will identify the correct match — your job is ONLY to extract verbatim.
-  ✓ "minket rice" → product: "minket rice"      ⛔ NOT "brown rice" or "white rice"
-  ✓ "mansouri rice" → product: "mansouri rice"   ⛔ NOT "masoori rice" or "brown rice"
-  ✓ "yellow rice" → product: "yellow rice"       ⛔ NOT "basmati rice"
-  ✓ "rajbhog rice" → product: "rajbhog rice"     ⛔ NOT "basmati rice"
-  ✓ "mogra rice" → product: "mogra rice"         ⛔ NOT "broken rice" or "white rice"
-  ✓ "trade rice" → product: "trade rice"         ⛔ NOT "brown rice"
-  ✓ "mingat rice" → product: "mingat rice"       ⛔ NOT "minket rice" or "brown rice"
-  ✓ "wada kolam rice" → product: "wada kolam rice" ⛔ NOT "kolam rice" or "brown rice"
+  ✓ "minket rice"       → product: "minket rice"       ⛔ NOT "brown rice" or "white rice"
+  ✓ "mansouri rice"     → product: "mansouri rice"      ⛔ NOT "masoori rice" or "brown rice"
+  ✓ "yellow rice"       → product: "yellow rice"        ⛔ NOT "basmati rice"
+  ✓ "rajbhog rice"      → product: "rajbhog rice"       ⛔ NOT "basmati rice"
+  ✓ "mogra rice"        → product: "mogra rice"         ⛔ NOT "broken rice" or "white rice"
+  ✓ "trade rice"        → product: "trade rice"         ⛔ NOT "brown rice"
+  ✓ "mingat rice"       → product: "mingat rice"        ⛔ NOT "minket rice" or "brown rice"
+  ✓ "wada kolam rice"   → product: "wada kolam rice"    ⛔ NOT "kolam rice" or "brown rice"
+  ✓ "zeeba classic"     → product: "zeeba classic"      ⛔ NOT "classic rice" or "basmati rice"
+  ✓ "delhi pasand easy" → product: "delhi pasand easy"  ⛔ NOT "easy rice" or "rice"
+  ✓ "galaxy 1121"       → product: "galaxy 1121"        ⛔ NOT "basmati rice" or "1121 rice"
   If you don't recognise a product name → TRANSLITERATE it phonetically. Never substitute.
 
 ⚠ DEVANAGARI TRANSLITERATION — phonetic only, no substitution:
@@ -91,6 +114,8 @@ Rules for product:
   "मसूरी"   → "masuri"    (NOT "masoori" — but close is OK)
   "काली"    → "kali"
   "श्रीराम"  → "sriram"
+  "ज़ीबा"   → "zeeba"     (NOT "jeba" or "jiba")
+  "दिल्ली पसंद" → "delhi pasand"  (brand name — keep full)
 
 Rules for quantity:
   - Extract the numeric value (e.g. "5 kilo" → 5, "2 dozen" → 2)
@@ -105,12 +130,21 @@ Rules for unit:
   - piece/pcs/pc → piece | dozen → dozen | packet/pack → packet
   - null if no unit mentioned
 
-Examples (Latin input):
+Examples (Latin input — generic products):
 "bhai 5 kilo wala atta de do" → {"items":[{"product":"atta","quantity":5,"unit":"kg"}]}
 "Raju ko 2kg chawal 1kg daal diya" → {"items":[{"product":"chawal","quantity":2,"unit":"kg"},{"product":"daal","quantity":1,"unit":"kg"}]}
 "paneer dena" → {"items":[{"product":"paneer","quantity":null,"unit":null}]}
 "rice, sugar, aata leke gaya — 5kg each" → {"items":[{"product":"rice","quantity":5,"unit":"kg"},{"product":"sugar","quantity":5,"unit":"kg"},{"product":"aata","quantity":5,"unit":"kg"}]}
 "Keshav ne rajbhog rice liya five kg, seven kg minket rice liya" → {"items":[{"product":"rajbhog rice","quantity":5,"unit":"kg"},{"product":"minket rice","quantity":7,"unit":"kg"}]}
+
+Examples (Latin input — brand / multi-word products):
+"Ramesh ko Delhi Pasand Easy 5kg aur Zeeba Classic 10kg diya" → {"items":[{"product":"delhi pasand easy","quantity":5,"unit":"kg"},{"product":"zeeba classic","quantity":10,"unit":"kg"}]}
+"dp easy 5kg aur dp light 10kg liya" → {"items":[{"product":"dp easy","quantity":5,"unit":"kg"},{"product":"dp light","quantity":10,"unit":"kg"}]}
+"Galaxy 1121 basmati 25kg bheja" → {"items":[{"product":"galaxy 1121","quantity":25,"unit":"kg"}]}
+"Biryani King Jammuni 50kg aur Gulmehak 1121 20kg" → {"items":[{"product":"biryani king jammuni","quantity":50,"unit":"kg"},{"product":"gulmehak 1121","quantity":20,"unit":"kg"}]}
+"ig kolam 15kg aur bk saffron 5kg diya" → {"items":[{"product":"ig kolam","quantity":15,"unit":"kg"},{"product":"bk saffron","quantity":5,"unit":"kg"}]}
+"Patliputra Farm Katarni Steam 30kg liya" → {"items":[{"product":"patliputra farm katarni steam","quantity":30,"unit":"kg"}]}
+"zeeba white sela dubar 10kg zeeba xxxl biryani 20kg" → {"items":[{"product":"zeeba white sela dubar","quantity":10,"unit":"kg"},{"product":"zeeba xxxl biryani","quantity":20,"unit":"kg"}]}
 
 Examples (Devanagari — transliterate verbatim, do NOT substitute):
 "केशव ने 6 केजी मिंगट राइस लिया" → {"items":[{"product":"mingat rice","quantity":6,"unit":"kg"}]}
