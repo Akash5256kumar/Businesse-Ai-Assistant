@@ -65,8 +65,12 @@ Return ONLY valid JSON — no extra text.
 Rules for product:
   - Lowercase only
   - Strip ONLY filler/action words: bhai, de do, wala, please, yaar, dena, lena, dijiye,
-    chahiye, hai, ko, ne, ka, ki, ke, liya, diya, le gaya, aur, and, or, etc.
-    NOTE: "or" and "aur" are item connectors (like commas) — they separate items, NOT product names.
+    chahiye, hai, ko, ne, ka, ki, ke, liya, diya, le gaya, aur, and, or, end, etc.
+    NOTE: "or"/"aur"/"end" are item connectors (like commas) — they separate items, NOT product names.
+  - Voice filler/noise artifacts → ignore completely (do NOT treat as product words):
+    Repeated characters: "अअअ", "उउउ", "अ अ", "ह ह", "ई ई" → ignore
+    Consonant noise: "खख", "ख ख ख", "घघ", "कक" → ignore
+    These are STT (speech-to-text) artifacts from the speaker hesitating mid-sentence.
   - Strip pronouns and pure verbs — but NEVER strip brand names or product model names.
   - Keep the FULL product name — brand prefix + variety name + model suffix.
     e.g. "Delhi Pasand Easy" → product: "delhi pasand easy"  (keep all 3 words)
@@ -108,16 +112,22 @@ Rules for product:
 ⚠ DEVANAGARI TRANSLITERATION — phonetic only, ZERO substitution allowed:
   Transliterate Devanagari words to Roman script phonetically. NEVER substitute with similar names.
   "मिंगट"   → "mingat"    (NOT "minket", NOT "brown rice")
+  "मिंकेड"  → "minkend"   (NOT "miniket", NOT "brown rice" — transliterate exactly)
   "ट्रेड"    → "trade"     (NOT "brown rice")
   "वाडा"    → "wada"      (NOT "vada" — but either is OK)
   "कोलंब"   → "kolam"     (NOT "kolumb")
   "मूंग"    → "moong"     (NOT "mooch", NOT "mung")
   "मसूरी"   → "masuri"    (NOT "masoori" — but close is OK)
+  "मंसूरी"  → "mansouri"  (NOT "masoori" — and ⛔ NOT "brown rice")
   "काली"    → "kali"
   "मोंस"    → "mons"      (NOT "moong", NOT "mooch", NOT "brown", NOT "mons rice")
+  "मूस"     → "moos"      (NOT "mooch", NOT "moong" — phonetic transliteration only)
+  "कालीमूस" → "kali moos" (NOT "brown rice", NOT "kali moong" — ⛔ never substitute)
+  "बासमती"  → "basmati"
   "श्रीराम"  → "sriram"
   "ज़ीबा"   → "zeeba"     (NOT "jeba" or "jiba")
   "दिल्ली पसंद" → "delhi pasand"  (brand name — keep full)
+  "सोना मंसूरी" → "sona mansouri"  (⛔ NOT "brown rice" — this is a specific rice variety name)
 
   ⛔ UNKNOWN DEVANAGARI WORD — MANDATORY FALLBACK RULE:
      If you cannot identify a Devanagari word → break it into characters and transliterate phonetically.
@@ -265,12 +275,12 @@ def _build_product_context_section(catalog_results: list[dict]) -> str:
 
 # ── Devanagari substitution guard ─────────────────────────────────────────────
 # Step 1 LLM sometimes replaces unknown Devanagari words with generic English
-# product names (e.g. "काली मोंस" → "brown rice"). When this happens Step 2
-# confirms the wrong name with 100% confidence and the error propagates silently.
-# This filter discards any catalog pre-analysis entry whose extracted product name
-# is a known substitution target but whose required Devanagari/Latin indicator is
-# absent from the original message.  Without a pre-analysis entry the Step 3 AI
-# must call get_recent_price(), which goes through aliases + fuzzy matching.
+# product names (e.g. "मिंकेड" → "brown rice", "काली मोंस" → "brown rice").
+# When the original message genuinely contains one "ब्राउन राइस" AND three
+# unrecognised words, Step 1 may return "brown rice" FOUR times — one legitimate
+# plus three substitutions.  A simple EXISTS check would pass all four.
+# This count-based filter allows each guarded product through only as many times
+# as its indicator actually appears in the original text.
 _DEVANAGARI_SUBSTITUTION_GUARDS: dict[str, list[str]] = {
     "brown rice":   ["ब्राउन", "brown"],
     "white rice":   ["व्हाइट", "वाइट", "white"],
@@ -285,13 +295,28 @@ def _filter_devanagari_substitutions(
     if not _DEVANAGARI_RE.search(original):
         return catalog_results
     lower_orig = original.lower()
+
+    # Count how many times each guarded product's indicator appears in the original.
+    # "ब्राउन" once → allow exactly 1 "brown rice" extraction through; extras are substitutions.
+    allowed: dict[str, int] = {}
+    for product_name, indicators in _DEVANAGARI_SUBSTITUTION_GUARDS.items():
+        count = sum(lower_orig.count(ind.lower()) for ind in indicators)
+        allowed[product_name] = count
+
+    consumed: dict[str, int] = {}
     filtered = []
     for res in catalog_results:
         product = (res.get("extracted", {}).get("product") or "").lower().strip()
-        required = _DEVANAGARI_SUBSTITUTION_GUARDS.get(product)
-        if required is not None and not any(ind.lower() in lower_orig for ind in required):
-            _logger.debug("substitution guard: dropping '%s' from pre-analysis", product)
-            continue
+        limit = allowed.get(product)
+        if limit is not None:
+            used = consumed.get(product, 0)
+            if used >= limit:
+                _logger.debug(
+                    "substitution guard: extra '%s' dropped (used=%d, allowed=%d)",
+                    product, used, limit,
+                )
+                continue
+            consumed[product] = used + 1
         filtered.append(res)
     return filtered
 

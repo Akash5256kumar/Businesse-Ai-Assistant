@@ -80,6 +80,9 @@ _PRODUCT_ALIASES: dict[str, str] = {
     "mansoori chawal": "sona masoori rice",
     "mansuri": "sona masoori rice", "mansuri rice": "sona masoori rice",
     "mansoor rice": "sona masoori rice", "masuri rice": "sona masoori rice",
+    # Devanagari STT transliterations: "सोना मंसूरी" → "sona mansouri"
+    "sona mansouri": "sona masoori rice", "sona mansouri rice": "sona masoori rice",
+    "sona mansuri": "sona masoori rice", "sona mansuri rice": "sona masoori rice",
 
     # ── Kolam Rice ───────────────────────────────────────────────────────────
     "kolam": "kolam rice", "kolam chawal": "kolam rice",
@@ -151,6 +154,8 @@ _PRODUCT_ALIASES: dict[str, str] = {
     "miniket rice": "miniket", "miniket chawal": "miniket",
     "minkind": "miniket", "minkind rice": "miniket", "minkind chawal": "miniket",
     "minkint": "miniket", "minkint rice": "miniket",
+    "minkend": "miniket", "minkend rice": "miniket", "minkend chawal": "miniket",
+    "minked": "miniket", "minked rice": "miniket",
 
     # ── Mingat Rice (distinct variety, not a typo of minket) ──────────────────
     "mingat": "mingat rice", "mingat rice": "mingat rice",
@@ -175,6 +180,9 @@ _PRODUCT_ALIASES: dict[str, str] = {
     "kali mooch rice": "kali mooch", "kaali mooch": "kali mooch",
     "kali moch": "kali mooch", "kali moch rice": "kali mooch",
     "kali moch chawal": "kali mooch", "kaali moch": "kali mooch",
+    "kali moos": "kali mooch", "kali moos rice": "kali mooch",
+    "kali moos chawal": "kali mooch", "kalimoos": "kali mooch",
+    "kali mus": "kali mooch", "kali mus rice": "kali mooch",
     "black moong rice": "kali mooch", "black moong": "kali mooch",
 
     # ── Yellow Rice ───────────────────────────────────────────────────────────
