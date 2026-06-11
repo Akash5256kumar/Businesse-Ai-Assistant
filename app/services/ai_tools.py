@@ -42,6 +42,7 @@ _PRODUCT_ALIASES: dict[str, str] = {
     # ── Basmati Rice ──────────────────────────────────────────────────────────
     "basmati": "basmati rice",
     "basmaati": "basmati rice", "basmti": "basmati rice",
+    "basmiti": "basmati rice", "basmiti rice": "basmati rice",
     "basmati chawal": "basmati rice", "basmti chawal": "basmati rice",
     "long grain rice": "basmati rice",
 
@@ -148,6 +149,8 @@ _PRODUCT_ALIASES: dict[str, str] = {
     "minket chawal": "miniket", "minketa": "miniket",
     "minketa rice": "miniket", "mini keta": "miniket",
     "miniket rice": "miniket", "miniket chawal": "miniket",
+    "minkind": "miniket", "minkind rice": "miniket", "minkind chawal": "miniket",
+    "minkint": "miniket", "minkint rice": "miniket",
 
     # ── Mingat Rice (distinct variety, not a typo of minket) ──────────────────
     "mingat": "mingat rice", "mingat rice": "mingat rice",
@@ -170,6 +173,8 @@ _PRODUCT_ALIASES: dict[str, str] = {
     "kali moong rice": "kali mooch", "kaali moong rice": "kali mooch",
     "kali moong chawal": "kali mooch", "kaali moong chawal": "kali mooch",
     "kali mooch rice": "kali mooch", "kaali mooch": "kali mooch",
+    "kali moch": "kali mooch", "kali moch rice": "kali mooch",
+    "kali moch chawal": "kali mooch", "kaali moch": "kali mooch",
     "black moong rice": "kali mooch", "black moong": "kali mooch",
 
     # ── Yellow Rice ───────────────────────────────────────────────────────────

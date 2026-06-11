@@ -65,7 +65,8 @@ Return ONLY valid JSON — no extra text.
 Rules for product:
   - Lowercase only
   - Strip ONLY filler/action words: bhai, de do, wala, please, yaar, dena, lena, dijiye,
-    chahiye, hai, ko, ne, ka, ki, ke, liya, diya, le gaya, aur, and, etc.
+    chahiye, hai, ko, ne, ka, ki, ke, liya, diya, le gaya, aur, and, or, etc.
+    NOTE: "or" and "aur" are item connectors (like commas) — they separate items, NOT product names.
   - Strip pronouns and pure verbs — but NEVER strip brand names or product model names.
   - Keep the FULL product name — brand prefix + variety name + model suffix.
     e.g. "Delhi Pasand Easy" → product: "delhi pasand easy"  (keep all 3 words)
@@ -129,6 +130,10 @@ Rules for product:
 
 Rules for quantity:
   - Extract the numeric value (e.g. "5 kilo" → 5, "2 dozen" → 2)
+  - Quantity can appear BEFORE or AFTER the product name — assign it to the nearest product.
+    "5 kg basmati rice kali mooch rice 7 kg" → basmati=5kg, kali mooch=7kg
+    "or" and "aur" are item separators (like commas), NOT part of quantity ranges.
+    "product1 7 kg or product2 10 kg" = product1=7kg AND product2=10kg (NOT "7 or 10 kg" for one item)
   - Spoken Hindi number words → convert to digits:
     five/paanch/पाँच=5  seven/saat/सात=7  ten/das/दस=10  fifteen/pandrah/पंद्रह=15
     twenty/bees/बीस=20  fifty/pachaas/पचास=50  hundred/sow/sau/सौ=100
@@ -146,6 +151,7 @@ Examples (Latin input — generic products):
 "paneer dena" → {"items":[{"product":"paneer","quantity":null,"unit":null}]}
 "rice, sugar, aata leke gaya — 5kg each" → {"items":[{"product":"rice","quantity":5,"unit":"kg"},{"product":"sugar","quantity":5,"unit":"kg"},{"product":"aata","quantity":5,"unit":"kg"}]}
 "Keshav ne rajbhog rice liya five kg, seven kg minket rice liya" → {"items":[{"product":"rajbhog rice","quantity":5,"unit":"kg"},{"product":"minket rice","quantity":7,"unit":"kg"}]}
+"5 kg basmati rice kali mooch rice 7 kg or 10 kg miniket rice" → {"items":[{"product":"basmati rice","quantity":5,"unit":"kg"},{"product":"kali mooch rice","quantity":7,"unit":"kg"},{"product":"miniket rice","quantity":10,"unit":"kg"}]}
 
 Examples (Latin input — brand / multi-word products):
 "Ramesh ko Delhi Pasand Easy 5kg aur Zeeba Classic 10kg diya" → {"items":[{"product":"delhi pasand easy","quantity":5,"unit":"kg"},{"product":"zeeba classic","quantity":10,"unit":"kg"}]}

@@ -89,9 +89,9 @@ def _match_score(query: str, candidate: str) -> float:
             # Very high char similarity (e.g. "basmti"↔"basmati", "sona masuri"↔"sona masoori")
             # High char similarity — score in 0.80–0.82 range, below 0.90 auto-threshold → AMBIGUOUS.
             return 0.80 + (avg - 0.85) * 0.15  # 0.85→0.80, 1.0→0.8225
-        if avg >= 0.75:
-            # Moderate similarity → score stays below auto-select; user picks from dropdown
-            return 0.65 + avg * 0.07  # 0.75→0.7025, 1.0→0.72
+        if avg >= 0.70:
+            # Moderate similarity → AMBIGUOUS (dropdown); floor at 0.70 ensures fuzzy threshold cleared
+            return 0.70 + (avg - 0.70) * 0.20  # 0.70→0.70, 0.85→0.73, 1.0→0.76
 
     # Partial word overlap (weak signal)
     common = q_words & c_words
