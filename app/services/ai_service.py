@@ -274,52 +274,141 @@ def _build_product_context_section(catalog_results: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# ── Devanagari substitution guard ─────────────────────────────────────────────
-# Step 1 LLM sometimes replaces unknown Devanagari words with generic English
-# product names (e.g. "मिंकेड" → "brown rice", "काली मोंस" → "brown rice").
-# When the original message genuinely contains one "ब्राउन राइस" AND three
-# unrecognised words, Step 1 may return "brown rice" FOUR times — one legitimate
-# plus three substitutions.  A simple EXISTS check would pass all four.
-# This count-based filter allows each guarded product through only as many times
-# as its indicator actually appears in the original text.
-_DEVANAGARI_SUBSTITUTION_GUARDS: dict[str, list[str]] = {
+# ── Substitution guard (ALL scripts) ─────────────────────────────────────────
+# Step 1 LLM sometimes replaces unknown product names with generic known ones
+# (e.g. "minkat rice" → "brown rice", "मिंकेड" → "brown rice").
+# When the original message has one real "brown rice" but Step 1 also substituted
+# two unknown products with "brown rice", we get 3 entries — only 1 is legitimate.
+#
+# Fix: count how many times the product's indicator appears in the original text.
+# Then among those N allowed slots, keep the occurrences whose QUANTITY appears
+# in proximity to the indicator in the original text — those are the real matches.
+# Falls back to keeping the last occurrences when no proximity match is found.
+
+_SUBSTITUTION_GUARDS: dict[str, list[str]] = {
     "brown rice":   ["ब्राउन", "brown"],
     "white rice":   ["व्हाइट", "वाइट", "white"],
     "black rice":   ["ब्लैक", "black"],
     "basmati rice": ["बासमती", "basmati"],
 }
 
+# English + Hindi number-word representations for common quantities
+_QTY_WORD_FORMS: dict[int, tuple[str, ...]] = {
+    1: ("one", "ek"), 2: ("two", "do"), 3: ("three", "teen"),
+    4: ("four", "char"), 5: ("five", "paanch"), 6: ("six", "chhe"),
+    7: ("seven", "saat"), 8: ("eight", "aath"), 9: ("nine", "nau"),
+    10: ("ten", "das"), 11: ("eleven", "gyarah"), 12: ("twelve", "barah"),
+    13: ("thirteen", "terah"), 14: ("fourteen", "chaudah"),
+    15: ("fifteen", "pandrah"), 16: ("sixteen", "solah"),
+    17: ("seventeen", "satrah"), 18: ("eighteen", "atharah"),
+    19: ("nineteen", "unnis"), 20: ("twenty", "bees"),
+    21: ("twenty one", "ikkees"), 22: ("twenty two", "baais"),
+    24: ("twenty four", "chaubees"), 25: ("twenty five", "pachees"),
+    27: ("twenty seven", "sattaais"), 30: ("thirty", "tees"),
+    40: ("forty", "chaalees"), 50: ("fifty", "pachaas"),
+}
 
-def _filter_devanagari_substitutions(
-    catalog_results: list[dict], original: str
+_PROX_WINDOW = 90  # characters on each side of indicator to search for qty
+
+
+def _qty_near_indicator(lower_orig: str, lower_clean: str, indicators: list[str], qty: float) -> bool:
+    """True if qty (as digit or word form) appears within _PROX_WINDOW chars of any indicator."""
+    qty_int = int(qty)
+    qty_reps = {str(qty_int)} | set(_QTY_WORD_FORMS.get(qty_int, ()))
+
+    for indicator in indicators:
+        ind = indicator.lower()
+        start = 0
+        while True:
+            p = lower_orig.find(ind, start)
+            if p == -1:
+                break
+            # Check original (for English/Devanagari word forms)
+            win_orig = lower_orig[max(0, p - _PROX_WINDOW):p + len(ind) + _PROX_WINDOW]
+            # Check clean (for Hindi→digit conversions, e.g. "paanch"→"5")
+            win_clean = lower_clean[max(0, p - _PROX_WINDOW):p + len(ind) + _PROX_WINDOW]
+            for rep in qty_reps:
+                pat = r"\b" + re.escape(rep) + r"\b"
+                if re.search(pat, win_orig) or re.search(pat, win_clean):
+                    return True
+            start = p + 1
+    return False
+
+
+def _filter_substituted_products(
+    catalog_results: list[dict], original: str, clean: str
 ) -> list[dict]:
-    if not _DEVANAGARI_RE.search(original):
-        return catalog_results
+    """
+    Count + proximity guard against product name substitutions. Applies to ALL scripts.
+
+    For each guarded product (e.g. "brown rice") the number of allowed occurrences
+    equals the number of times its indicator ("brown") appears in the original text.
+    When there are more extractions than allowed, the ones whose quantity appears
+    near the indicator in the original text are preferred (legitimate); the rest
+    are dropped (substitutions). Falls back to keeping the LAST occurrences when
+    no proximity match is found (substitutions tend to appear earlier in the list).
+    """
     lower_orig = original.lower()
+    lower_clean = clean.lower()
 
-    # Count how many times each guarded product's indicator appears in the original.
-    # "ब्राउन" once → allow exactly 1 "brown rice" extraction through; extras are substitutions.
+    # Count how many times each product's indicator appears in the original
     allowed: dict[str, int] = {}
-    for product_name, indicators in _DEVANAGARI_SUBSTITUTION_GUARDS.items():
-        count = sum(lower_orig.count(ind.lower()) for ind in indicators)
-        allowed[product_name] = count
+    for product_name, indicators in _SUBSTITUTION_GUARDS.items():
+        allowed[product_name] = sum(lower_orig.count(ind.lower()) for ind in indicators)
 
-    consumed: dict[str, int] = {}
-    filtered = []
-    for res in catalog_results:
+    # Separate into guarded groups and pass-through items (preserving order via index)
+    guarded_groups: dict[str, list[tuple[int, dict]]] = {}
+    passthrough: list[tuple[int, dict]] = []
+    for idx, res in enumerate(catalog_results):
         product = (res.get("extracted", {}).get("product") or "").lower().strip()
-        limit = allowed.get(product)
-        if limit is not None:
-            used = consumed.get(product, 0)
-            if used >= limit:
-                _logger.debug(
-                    "substitution guard: extra '%s' dropped (used=%d, allowed=%d)",
-                    product, used, limit,
-                )
-                continue
-            consumed[product] = used + 1
-        filtered.append(res)
-    return filtered
+        if product in allowed:
+            guarded_groups.setdefault(product, []).append((idx, res))
+        else:
+            passthrough.append((idx, res))
+
+    kept: list[tuple[int, dict]] = list(passthrough)
+
+    for product, indexed_items in guarded_groups.items():
+        limit = allowed[product]
+        if limit == 0:
+            _logger.debug("substitution guard: all '%s' dropped (indicator absent in original)", product)
+            continue
+        if len(indexed_items) <= limit:
+            kept.extend(indexed_items)
+            continue
+
+        # More extractions than allowed → use proximity to find legitimate ones
+        indicators = _SUBSTITUTION_GUARDS[product]
+        near: list[tuple[int, dict]] = []
+        far: list[tuple[int, dict]] = []
+        for orig_idx, res in indexed_items:
+            qty = res.get("extracted", {}).get("quantity")
+            try:
+                if qty is not None and _qty_near_indicator(lower_orig, lower_clean, indicators, float(qty)):
+                    near.append((orig_idx, res))
+                else:
+                    far.append((orig_idx, res))
+            except (TypeError, ValueError):
+                far.append((orig_idx, res))
+
+        # Keep up to `limit` items; prefer near, then fall back to last-in-list
+        selected = near[:limit]
+        remaining = limit - len(selected)
+        if remaining > 0:
+            # "Last wins" for the fallback: substitutions appear earlier in the product list
+            selected.extend(sorted(far, key=lambda x: x[0], reverse=True)[:remaining])
+
+        dropped = len(indexed_items) - len(selected)
+        if dropped:
+            _logger.debug(
+                "substitution guard: kept %d/%d '%s' (near=%d, limit=%d)",
+                len(selected), len(indexed_items), product, len(near), limit,
+            )
+        kept.extend(selected)
+
+    # Restore original extraction order
+    kept.sort(key=lambda x: x[0])
+    return [res for _, res in kept]
 
 
 # ── Regex helpers ────────────────────────────────────────────────────────────
@@ -1355,7 +1444,7 @@ async def parse_message(
                     )
                     _catalog_results.append({"extracted": item, "catalog_matches": catalog_data})
 
-                catalog_results = _filter_devanagari_substitutions(_catalog_results, message)
+                catalog_results = _filter_substituted_products(_catalog_results, message, clean)
                 product_context = _build_product_context_section(catalog_results)
         except Exception as exc:
             _logger.warning("Steps 1/2 product pipeline failed (non-fatal): %s", exc)
