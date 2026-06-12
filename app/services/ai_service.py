@@ -1362,6 +1362,11 @@ async def parse_message(
     _logger.debug("sending to AI: %s", clean[:60])
     use_tools = db is not None and user_id is not None
 
+    # When Step 2 already resolved ALL extracted products (found/ambiguous/not-found),
+    # the product_context section tells the LLM everything it needs — skip the tool
+    # call round-trip entirely (saves 1–2 extra LLM calls for large messages).
+    skip_tools = use_tools and bool(catalog_results)
+
     for attempt in range(2):
         try:
             messages = _build_messages(
@@ -1370,8 +1375,8 @@ async def parse_message(
                 product_context=product_context,
             )
 
-            if use_tools:
-                # First call: allow tool use
+            if use_tools and not skip_tools:
+                # Full tool-calling flow: allow LLM to call get_recent_price etc.
                 response = await _client.chat.completions.create(
                     model=_MODEL,
                     messages=messages,
@@ -1403,29 +1408,21 @@ async def parse_message(
                             "tool_call_id": tc.id,
                             "content": tool_result,
                         })
-                    # Second call: get final JSON with real data injected
-                    response = await _client.chat.completions.create(
-                        model=_MODEL,
-                        messages=messages,
-                        temperature=0,
-                        max_tokens=1024,
-                        response_format={"type": "json_object"},
-                    )
-                else:
-                    # No tool calls — re-request with json_object format
-                    response = await _client.chat.completions.create(
-                        model=_MODEL,
-                        messages=messages,
-                        temperature=0,
-                        max_tokens=1024,
-                        response_format={"type": "json_object"},
-                    )
-            else:
+                # Final JSON call (with or without tool results injected)
                 response = await _client.chat.completions.create(
                     model=_MODEL,
                     messages=messages,
                     temperature=0,
-                    max_tokens=1024,
+                    max_tokens=2048,
+                    response_format={"type": "json_object"},
+                )
+            else:
+                # skip_tools=True OR no DB: single call with product_context pre-loaded
+                response = await _client.chat.completions.create(
+                    model=_MODEL,
+                    messages=messages,
+                    temperature=0,
+                    max_tokens=2048,
                     response_format={"type": "json_object"},
                 )
 
