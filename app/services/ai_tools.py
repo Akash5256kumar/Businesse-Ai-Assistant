@@ -156,6 +156,8 @@ _PRODUCT_ALIASES: dict[str, str] = {
     "minkint": "miniket", "minkint rice": "miniket",
     "minkend": "miniket", "minkend rice": "miniket", "minkend chawal": "miniket",
     "minked": "miniket", "minked rice": "miniket",
+    "minkat": "miniket", "minkat rice": "miniket", "minkat chawal": "miniket",
+    "minket rice": "miniket",
 
     # ── Mingat Rice (distinct variety, not a typo of minket) ──────────────────
     "mingat": "mingat rice", "mingat rice": "mingat rice",
@@ -172,6 +174,13 @@ _PRODUCT_ALIASES: dict[str, str] = {
     "wada kolam chawal": "wada kolam rice", "vada kolam chawal": "wada kolam rice",
     "sriram wada kolam": "wada kolam rice",
     "sriram wada kolam rice": "wada kolam rice",
+    "sriram wada rakolem": "wada kolam rice",
+    "sriram wada rakolem rice": "wada kolam rice",
+    "shri ram wada rakolem": "wada kolam rice",
+    "shri ram wada rakolem rice": "wada kolam rice",
+    "shri ram wada kolam": "wada kolam rice",
+    "shri ram wada kolam rice": "wada kolam rice",
+    "rakolem": "wada kolam rice", "rakolem rice": "wada kolam rice",
 
     # ── Kali Mooch (inventory name — NOT "kali moong rice") ──────────────────
     "kali moong": "kali mooch", "kaali moong": "kali mooch",

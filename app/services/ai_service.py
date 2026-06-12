@@ -1208,24 +1208,23 @@ def _fix_substituted_product_names(parsed: dict, catalog_results: list[dict]) ->
     """
     Detect and reverse product name substitutions in the AI response.
 
-    Problem: When products are not in the inventory the AI sometimes renames them
-    to a known product (e.g. "mingat rice" → "brown rice") instead of keeping the
-    original name with price_source: "not_found".
+    Problem: When products are AMBIGUOUS (0.50–0.79) or NOT FOUND (<0.50) the AI
+    sometimes renames them to a known inventory product (e.g. "minkat rice" → "brown rice").
+    This guard restores the original extracted name and sets the correct price_source.
 
-    Strategy: compare each AI-returned item (price_source="inventory") against the
-    Step-1-extracted products that had no catalog match (confidence < 0.50). When
-    quantities match AND names are different, the AI substituted — restore the
-    original extracted name and mark the item as not_found.
+    Strategy: compare each AI item with price_source="inventory" against all Step-2
+    products below the FOUND threshold (< 0.80). When qty matches AND names differ,
+    the AI substituted — restore original name and set "ambiguous" or "not_found".
     """
-    not_found_extracted = [
-        r["extracted"] for r in catalog_results
-        if r["catalog_matches"].get("top_match_confidence", 0.0) < 0.50
+    # Any product below 0.80 (AMBIGUOUS or NOT FOUND) could be substituted by LLM
+    unclear_extracted = [
+        r for r in catalog_results
+        if r["catalog_matches"].get("top_match_confidence", 0.0) < 0.80
     ]
-    if not not_found_extracted:
+    if not unclear_extracted:
         return parsed
 
-    # Build (name, qty) pairs that are legitimately found in inventory so we never
-    # accidentally overwrite a correct match.
+    # Build (name, qty) pairs that are legitimately found — never overwrite these
     found_pairs: set[tuple] = set()
     for r in catalog_results:
         if r["catalog_matches"].get("top_match_confidence", 0.0) >= 0.80:
@@ -1239,7 +1238,7 @@ def _fix_substituted_product_names(parsed: dict, catalog_results: list[dict]) ->
 
     for tx in parsed.get("transactions", []):
         items = tx.get("items") or []
-        used_not_found: set[str] = set()
+        used_unclear: set[str] = set()
 
         for item in items:
             if item.get("price_source") != "inventory":
@@ -1255,9 +1254,10 @@ def _fix_substituted_product_names(parsed: dict, catalog_results: list[dict]) ->
 
             item_qty_f = float(item_qty)
 
-            for ext in not_found_extracted:
+            for r in unclear_extracted:
+                ext = r["extracted"]
                 ext_name = (ext.get("product") or "").lower()
-                if ext_name in used_not_found:
+                if ext_name in used_unclear:
                     continue
                 ext_qty = ext.get("quantity")
                 if ext_qty is None:
@@ -1267,16 +1267,18 @@ def _fix_substituted_product_names(parsed: dict, catalog_results: list[dict]) ->
                 # Names must be genuinely different (not just minor casing/spacing)
                 if ext_name in ai_name or ai_name in ext_name:
                     continue
-                # AI substituted — restore original name
+                # Determine correct price_source for the restored item
+                conf = r["catalog_matches"].get("top_match_confidence", 0.0)
+                restored_source = "ambiguous" if conf >= 0.50 else "not_found"
                 _logger.warning(
-                    "Substitution guard: restored '%s' qty=%s → '%s' (not_found)",
-                    ai_name, item_qty, ext_name,
+                    "Substitution guard: restored '%s' qty=%s → '%s' (%s, conf=%.2f)",
+                    ai_name, item_qty, ext_name, restored_source, conf,
                 )
                 item["name"] = ext_name
                 item["rate_per_unit"] = None
-                item["price_source"] = "not_found"
+                item["price_source"] = restored_source
                 item["subtotal"] = 0
-                used_not_found.add(ext_name)
+                used_unclear.add(ext_name)
                 break
 
     return parsed
