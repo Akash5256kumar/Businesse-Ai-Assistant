@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -1326,17 +1327,24 @@ async def parse_message(
             _logger.debug("Step 1 extracted: %s", extracted_items)
 
             if extracted_items:
+                # Normalize all product names first (sync, fast)
+                valid_items = [
+                    (item, _normalize_product_name(item.get("product", "").strip()))
+                    for item in extracted_items
+                    if item.get("product", "").strip()
+                ]
+
+                # Run all catalog lookups in parallel instead of sequentially
+                catalog_data_list = await asyncio.gather(
+                    *[
+                        _inventory_service.find_product_catalog_matches(db, user_id, normalized)
+                        for _, normalized in valid_items
+                    ]
+                )
+
                 _catalog_results: list[dict] = []
-                for item in extracted_items:
-                    product_name = item.get("product", "").strip()
-                    if not product_name:
-                        continue
-                    # Normalize via alias library before catalog lookup so Step 2
-                    # benefits from the same aliases as Step 3's get_recent_price call.
-                    normalized = _normalize_product_name(product_name)
-                    catalog_data = await _inventory_service.find_product_catalog_matches(
-                        db, user_id, normalized
-                    )
+                for (item, normalized), catalog_data in zip(valid_items, catalog_data_list):
+                    product_name = item.get("product", "")
                     _logger.debug(
                         "Step 2 catalog match for '%s' (normalized: '%s'): top_conf=%.2f",
                         product_name,
@@ -1376,9 +1384,19 @@ async def parse_message(
                 tool_calls = response.choices[0].message.tool_calls or []
                 if tool_calls:
                     messages.append(response.choices[0].message)
-                    for tc in tool_calls:
-                        args = json.loads(tc.function.arguments)
-                        tool_result = await execute_tool(tc.function.name, args, db, user_id)
+                    # Execute all tool calls in parallel (e.g. 11 get_recent_price calls at once)
+                    tool_results = await asyncio.gather(
+                        *[
+                            execute_tool(
+                                tc.function.name,
+                                json.loads(tc.function.arguments),
+                                db,
+                                user_id,
+                            )
+                            for tc in tool_calls
+                        ]
+                    )
+                    for tc, tool_result in zip(tool_calls, tool_results):
                         _logger.debug("Tool %s → %s", tc.function.name, tool_result[:120])
                         messages.append({
                             "role": "tool",
