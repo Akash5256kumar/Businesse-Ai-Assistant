@@ -411,6 +411,147 @@ def _filter_substituted_products(
     return [res for _, res in kept]
 
 
+# ── Step 1 substitution recovery ──────────────────────────────────────────────
+# Filtering catalog_results only DROPS the extra "brown rice" entries.
+# That loses the original product ("minkat rice") from product_context entirely,
+# so the Step 3 LLM re-substitutes it with "brown rice" again.
+# Solution: recover the original product name BEFORE Step 2 catalog lookup so
+# the corrected item goes through alias normalization and catalog matching properly.
+
+_STEP1_SKIP_WORDS = frozenset({
+    "bhai", "yaar", "ne", "ko", "ka", "ki", "ke", "liya", "diya", "le", "gaya",
+    "de", "do", "aur", "and", "or", "end", "wala", "lena", "dena", "dijiye",
+    "chahiye", "hai", "se", "the", "for", "usne", "unhone", "unka",
+})
+_STEP1_UNIT_WORDS = frozenset({
+    "kg", "kilo", "kilogram", "gram", "g", "litre", "liter", "ltr",
+    "piece", "pcs", "packet", "pack", "dozen", "box", "bori",
+})
+_STEP1_ALL_QTY_WORDS: frozenset[str] = frozenset(
+    w for words in _QTY_WORD_FORMS.values() for w in words
+)
+
+
+def _extract_product_before_qty(lower_orig: str, qty_pos: int) -> str | None:
+    """Extract product name from text immediately before a quantity position."""
+    window = lower_orig[max(0, qty_pos - 80):qty_pos]
+    # Take the last segment after a connector
+    for sep in (",", ";", " aur ", " and ", " or ", ". ", " end "):
+        if sep in window:
+            window = window.rsplit(sep, 1)[-1]
+    skip = _STEP1_SKIP_WORDS | _STEP1_UNIT_WORDS | _STEP1_ALL_QTY_WORDS
+    words = [w for w in window.strip().split() if w not in skip and len(w) >= 2 and not w.isdigit()]
+    result = " ".join(words).strip()
+    return result if len(result) >= 3 else None
+
+
+def _fix_step1_substitutions(
+    extracted_items: list[dict], original: str, clean: str
+) -> list[dict]:
+    """
+    Detect and reverse Step 1 LLM substitutions (e.g. "minkat rice" → "brown rice")
+    BEFORE Step 2 catalog lookup.
+
+    Simply dropping the extra "brown rice" entries from catalog_results removes
+    those products from product_context entirely — the Step 3 LLM then re-substitutes
+    them because it sees the product in the message but has no context for it.
+
+    Instead, for each substituted occurrence we recover the original product name
+    from the message text using the quantity as a positional anchor, then return the
+    corrected extracted_items list so Step 2 alias-normalises and catalog-matches them.
+    """
+    lower_orig = original.lower()
+    lower_clean = clean.lower()
+
+    allowed = {
+        p: sum(lower_orig.count(ind.lower()) for ind in inds)
+        for p, inds in _SUBSTITUTION_GUARDS.items()
+    }
+
+    guarded_indices: dict[str, list[int]] = {}
+    for i, item in enumerate(extracted_items):
+        p = (item.get("product") or "").lower().strip()
+        if p in allowed:
+            guarded_indices.setdefault(p, []).append(i)
+
+    to_recover: list[int] = []
+    for product, indices in guarded_indices.items():
+        limit = allowed[product]
+        if len(indices) <= limit:
+            continue
+
+        indicators = _SUBSTITUTION_GUARDS[product]
+        near = [
+            i for i in indices
+            if extracted_items[i].get("quantity") is not None
+            and _qty_near_indicator(
+                lower_orig, lower_clean, indicators,
+                float(extracted_items[i]["quantity"]),
+            )
+        ]
+        far = [i for i in indices if i not in near]
+
+        kept: set[int] = set(near[:limit])
+        remaining = limit - len(kept)
+        if remaining > 0:
+            kept.update(sorted(far, reverse=True)[:remaining])
+
+        for i in indices:
+            if i not in kept:
+                to_recover.append(i)
+
+    if not to_recover:
+        return extracted_items
+
+    result = list(extracted_items)
+    used_positions: set[int] = set()
+
+    for idx in sorted(to_recover):
+        item = extracted_items[idx]
+        qty = item.get("quantity")
+        if qty is None:
+            continue
+
+        qty_int = int(float(qty))
+        qty_reps = [str(qty_int)] + list(_QTY_WORD_FORMS.get(qty_int, ()))
+
+        recovered: str | None = None
+        recovered_pos: int | None = None
+        for rep in qty_reps:
+            for m in re.finditer(r"\b" + re.escape(rep) + r"\b", lower_orig):
+                pos = m.start()
+                if pos in used_positions:
+                    continue
+                name = _extract_product_before_qty(lower_orig, pos)
+                if not name:
+                    continue
+                # Skip if the recovered name itself contains a guard indicator
+                # (that would mean we found the legitimate occurrence, not a substitution)
+                if any(
+                    ind.lower() in name
+                    for inds in _SUBSTITUTION_GUARDS.values()
+                    for ind in inds
+                ):
+                    continue
+                recovered = name
+                recovered_pos = pos
+                break
+            if recovered:
+                break
+
+        if recovered is not None and recovered_pos is not None:
+            new_item = dict(item)
+            new_item["product"] = recovered
+            result[idx] = new_item
+            used_positions.add(recovered_pos)
+            _logger.info(
+                "Step1 subst. fix: '%s' qty=%s → recovered '%s' from original text",
+                item.get("product"), qty, recovered,
+            )
+
+    return result
+
+
 # ── Regex helpers ────────────────────────────────────────────────────────────
 
 # If any item unit found → message is complex → skip regex, go to AI
@@ -1416,6 +1557,12 @@ async def parse_message(
         try:
             extracted_items = await extract_products_from_text(message)
             _logger.debug("Step 1 extracted: %s", extracted_items)
+
+            # Fix any substitutions the Step 1 LLM made BEFORE catalog lookup.
+            # e.g. "minkat rice" → "brown rice" gets reversed to "minkat rice"
+            # so Step 2 alias-normalises it correctly ("minkat rice" → "miniket").
+            extracted_items = _fix_step1_substitutions(extracted_items, message, clean)
+            _logger.debug("Step 1 after subst. fix: %s", extracted_items)
 
             if extracted_items:
                 # Normalize all product names first (sync, fast)
