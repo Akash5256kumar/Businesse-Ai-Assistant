@@ -41,7 +41,7 @@ tmp/
 .DS_Store
 
 # MuRIL model weights and HuggingFace cache (transfer to server via scp/rsync)
-models/
+/models/
 .muril_cache/
 
 # Optional: ignore local secrets and service files
