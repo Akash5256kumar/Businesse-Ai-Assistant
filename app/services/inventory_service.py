@@ -26,6 +26,8 @@ _UNIT_ALIASES: dict[str, str] = {
     "meter": "meter", "metre": "meter",
 }
 
+_GRAIN_SUFFIXES = {"rice", "chawal", "chaawal", "chawl", "grain"}
+
 
 def _norm(name: str) -> str:
     return re.sub(r"\s+", " ", name.strip().lower())
@@ -44,6 +46,60 @@ def _char_sim(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+def _words(name: str) -> list[str]:
+    return [part for part in _norm(name).split() if part]
+
+
+def _core_words(name: str) -> list[str]:
+    words = _words(name)
+    while words and words[-1] in _GRAIN_SUFFIXES:
+        words.pop()
+    return words or _words(name)
+
+
+def _numeric_tokens(words: list[str]) -> tuple[str, ...]:
+    return tuple(word for word in words if any(ch.isdigit() for ch in word))
+
+
+def _has_numeric_conflict(query_words: list[str], candidate_words: list[str]) -> bool:
+    q_nums = _numeric_tokens(query_words)
+    c_nums = _numeric_tokens(candidate_words)
+    return bool(q_nums or c_nums) and q_nums != c_nums
+
+
+def _identity_match_score(query: str, candidate: str) -> float:
+    """
+    Conservative identity matcher used before mutating data or auto-selecting a SKU.
+
+    A match is considered safe only when:
+      - names are equal after normalization, or
+      - they differ only by generic grain suffixes ("rice", "chawal"), or
+      - they are the same token-by-token with very small typos.
+    """
+    q_words = _core_words(query)
+    c_words = _core_words(candidate)
+    if not q_words or not c_words:
+        return 0.0
+    if q_words == c_words:
+        return 1.0
+    if _has_numeric_conflict(q_words, c_words):
+        return 0.0
+    if len(q_words) != len(c_words):
+        return 0.0
+
+    sims: list[float] = []
+    for q_word, c_word in zip(q_words, c_words):
+        if q_word == c_word:
+            sims.append(1.0)
+            continue
+        if any(ch.isdigit() for ch in q_word) or any(ch.isdigit() for ch in c_word):
+            return 0.0
+        sims.append(_char_sim(q_word, c_word))
+
+    avg = sum(sims) / len(sims)
+    return 0.93 if sims and min(sims) >= 0.80 and avg >= 0.92 else 0.0
+
+
 def _match_score(query: str, candidate: str) -> float:
     """
     Return a [0, 1] similarity score between query and candidate strings.
@@ -58,29 +114,37 @@ def _match_score(query: str, candidate: str) -> float:
     if q == c:
         return 1.0
 
-    q_words = set(q.split())
-    c_words = set(c.split())
+    q_core = _core_words(query)
+    c_core = _core_words(candidate)
+    if not q_core or not c_core:
+        return 0.0
+    if q_core == c_core:
+        return 0.95
+
+    q_words = set(q_core)
+    c_words = set(c_core)
+    numeric_conflict = _has_numeric_conflict(q_core, c_core)
 
     if q_words == c_words:
         return 0.95
-    # All query words in candidate and query is ≥ 60 % as long as candidate
-    if q_words.issubset(c_words) and len(q) >= len(c) * 0.6:
-        return 0.85
-    # All candidate words in query (e.g. "kali mooch rice" ↔ "kali mooch")
+    # One side is a less-specific variant of the other ("govind bhog" vs "govind bhog old").
+    # Keep this below the auto-select threshold so the caller can surface ambiguity safely.
+    if q_words.issubset(c_words) and len(q_words) < len(c_words):
+        return 0.60
     if c_words.issubset(q_words):
-        extra = q_words - c_words
-        # User appended a generic grain suffix (very common in Hindi speech) — still a strong match
-        _GRAIN_SUFFIXES = {"rice", "chawal", "chaawal", "chawl", "grain"}
-        if extra and extra.issubset(_GRAIN_SUFFIXES):
-            return 0.92
-        return 0.80
+        return 0.60
     # Single-word query matches a whole word in candidate
     if len(q_words) == 1 and q in c_words:
         return 0.70
+    if numeric_conflict:
+        common = q_words & c_words
+        if common:
+            return 0.60 * len(common) / min(len(q_words), len(c_words))
+        return 0.0
 
     # ── Character-level fuzzy (typo tolerance) ────────────────────────────────
-    q_list = q.split()
-    c_list = c.split()
+    q_list = q_core
+    c_list = c_core
     if q_list and c_list:
         # Each query word: find best matching candidate word by char similarity
         word_sims = [max(_char_sim(qw, cw) for cw in c_list) for qw in q_list]
@@ -103,6 +167,31 @@ def _match_score(query: str, candidate: str) -> float:
 def _fuzzy_match(query: str, candidate: str) -> bool:
     """True when score ≥ 0.70 (used by adjust_stock and upsert lookups)."""
     return _match_score(query, candidate) >= 0.70
+
+
+def _identity_matches(query: str, items: list[Inventory]) -> list[tuple[Inventory, float]]:
+    scored = sorted(
+        [
+            (item, _identity_match_score(query, item.product_name))
+            for item in items
+        ],
+        key=lambda pair: pair[1],
+        reverse=True,
+    )
+    return [(item, score) for item, score in scored if score > 0.0]
+
+
+def _fuzzy_item_matches(
+    query: str,
+    items: list[Inventory],
+    threshold: float,
+) -> list[tuple[Inventory, float]]:
+    scored = sorted(
+        [(item, _item_score(query, item)) for item in items],
+        key=lambda pair: pair[1],
+        reverse=True,
+    )
+    return [(item, score) for item, score in scored if score >= threshold]
 
 
 def _item_score(query: str, item: Inventory) -> float:
@@ -132,18 +221,9 @@ async def get_stock(db: AsyncSession, user_id: int, product_name: str) -> dict:
     result = await db.execute(select(Inventory).where(Inventory.user_id == user_id))
     all_items = result.scalars().all()
 
-    scored = sorted(
-        [(i, _item_score(product_name, i)) for i in all_items],
-        key=lambda x: x[1], reverse=True,
-    )
-    candidates = [(i, s) for i, s in scored if s >= 0.70]
-
-    if not candidates:
-        return {"found": False, "product_name": product_name,
-                "message": f"'{product_name}' inventory mein nahi mila"}
-
-    if len(candidates) == 1 or candidates[0][1] >= 0.95:
-        item = candidates[0][0]
+    exact_matches = _identity_matches(product_name, all_items)
+    if exact_matches:
+        item = exact_matches[0][0]
         return {
             "found": True,
             "category": item.category,
@@ -154,6 +234,11 @@ async def get_stock(db: AsyncSession, user_id: int, product_name: str) -> dict:
             "last_sale_price": float(item.last_sale_price) if item.last_sale_price else None,
             "updated_at": item.updated_at.strftime("%Y-%m-%d %H:%M") if item.updated_at else None,
         }
+
+    candidates = _fuzzy_item_matches(product_name, all_items, 0.60)
+    if not candidates:
+        return {"found": False, "product_name": product_name,
+                "message": f"'{product_name}' inventory mein nahi mila"}
 
     names = [i.product_name for i, _ in candidates[:5]]
     return {
@@ -194,45 +279,38 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
       2. Past transactions — most recent rate_per_unit from sale/purchase items.
          Tie-break by frequency (most-ordered product wins).
     """
-    _AUTO_THRESHOLD = 0.80   # ≥ 0.80 → high-confidence auto-proceed; 0.70–0.79 → AMBIGUOUS dropdown
-    _FUZZY_THRESHOLD = 0.70
+    _FUZZY_THRESHOLD = 0.60
 
     # ── Source 1: Inventory table ─────────────────────────────────────────────
     inv_result = await db.execute(select(Inventory).where(Inventory.user_id == user_id))
     all_inv = inv_result.scalars().all()
 
-    scored_inv = sorted(
-        [(i, _item_score(product_name, i)) for i in all_inv],
-        key=lambda x: x[1], reverse=True,
-    )
-    candidates_inv = [(i, s) for i, s in scored_inv if s >= _FUZZY_THRESHOLD]
-
-    if candidates_inv:
-        best_inv, best_score = candidates_inv[0]
-        if best_score >= _AUTO_THRESHOLD:
-            # Confident match — auto-select, no clarification needed
-            price = best_inv.last_sale_price or best_inv.last_purchase_price
-            if price:
-                return {
-                    "found": True,
-                    "category": best_inv.category,
-                    "product_name": best_inv.product_name,
-                    "rate": float(price),
-                    "unit": best_inv.unit or "",
-                    "source": "inventory",
-                    "score": best_score,
-                }
-            # Inventory entry exists but no price stored — fall through to transactions
-        else:
-            # Below auto-select threshold → ambiguous; user picks from card dropdown
-            names = [i.product_name for i, _ in candidates_inv[:3]]
+    exact_inv = _identity_matches(product_name, all_inv)
+    if exact_inv:
+        best_inv, best_score = exact_inv[0]
+        price = best_inv.last_sale_price or best_inv.last_purchase_price
+        if price:
             return {
-                "found": False,
-                "ambiguous": True,
-                "product_name": product_name,
-                "candidates": names,
-                "message": f"Multiple products found for '{product_name}': {', '.join(names)}.",
+                "found": True,
+                "category": best_inv.category,
+                "product_name": best_inv.product_name,
+                "rate": float(price),
+                "unit": best_inv.unit or "",
+                "source": "inventory",
+                "score": best_score,
             }
+        # Inventory entry exists but no price stored — fall through to transactions
+
+    candidates_inv = _fuzzy_item_matches(product_name, all_inv, _FUZZY_THRESHOLD)
+    if candidates_inv:
+        names = [i.product_name for i, _ in candidates_inv[:3]]
+        return {
+            "found": False,
+            "ambiguous": True,
+            "product_name": product_name,
+            "candidates": names,
+            "message": f"Multiple products found for '{product_name}': {', '.join(names)}.",
+        }
 
     # ── Source 2: Past transactions ───────────────────────────────────────────
     tx_result = await db.execute(
@@ -244,7 +322,8 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
     txs = tx_result.scalars().all()
 
     # Track best rate AND frequency for each normalised product name
-    seen: dict[str, tuple[float, int, dict]] = {}  # key → (score, count, data)
+    exact_seen: dict[str, tuple[float, int, dict]] = {}
+    fuzzy_seen: dict[str, tuple[float, int, dict]] = {}
     for tx in txs:
         for item in tx.items or []:
             if not isinstance(item, dict):
@@ -253,14 +332,17 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
             rate = item.get("rate_per_unit")
             if not name or not rate:
                 continue
+            identity_score = _identity_match_score(product_name, name)
             score = _match_score(product_name, name)
-            if score < _FUZZY_THRESHOLD:
+            if identity_score <= 0.0 and score < _FUZZY_THRESHOLD:
                 continue
             key = _norm(name)
-            prev_score, prev_count, prev_data = seen.get(key, (0.0, 0, {}))
+            target = exact_seen if identity_score > 0.0 else fuzzy_seen
+            chosen_score = identity_score if identity_score > 0.0 else score
+            prev_score, prev_count, prev_data = target.get(key, (0.0, 0, {}))
             count = prev_count + 1
-            if score >= prev_score:
-                seen[key] = (score, count, {
+            if chosen_score >= prev_score:
+                target[key] = (chosen_score, count, {
                     "found": True,
                     "product_name": name,
                     "rate": float(rate),
@@ -268,26 +350,25 @@ async def get_recent_price(db: AsyncSession, user_id: int, product_name: str) ->
                     "source": "transactions",
                     "transaction_type": tx.type,
                     "date": tx.created_at.strftime("%Y-%m-%d"),
-                    "score": score,
+                    "score": chosen_score,
                 })
             else:
-                seen[key] = (prev_score, count, prev_data)
+                target[key] = (prev_score, count, prev_data)
 
-    if not seen:
+    if exact_seen:
+        ranked_exact = sorted(exact_seen.values(), key=lambda x: (x[0], x[1]), reverse=True)
+        _, _, best_data = ranked_exact[0]
+        return best_data
+
+    if not fuzzy_seen:
         return {
             "found": False,
             "product_name": product_name,
             "message": f"'{product_name}' ka koi price nahi mila. Rate null rakha — user edit screen mein set kar sakta hai.",
         }
 
-    # Sort by score desc, then by frequency desc (most-ordered wins on tie)
-    ranked = sorted(seen.values(), key=lambda x: (x[0], x[1]), reverse=True)
-    best_score, best_count, best_data = ranked[0]
-
-    if best_score >= _AUTO_THRESHOLD:
-        return best_data
-
-    # Best match below auto-select threshold → ambiguous
+    # Best fuzzy match stays ambiguous — never auto-select without a safe identity match.
+    ranked = sorted(fuzzy_seen.values(), key=lambda x: (x[0], x[1]), reverse=True)
     names = [v["product_name"] for _, _, v in ranked[:3]]
     return {
         "found": False,
@@ -326,12 +407,31 @@ async def find_product_catalog_matches(
             "product_not_found": True,
         }
 
+    exact_matches = _identity_matches(product_name, all_inv)
+    if exact_matches:
+        matches = [
+            {
+                "product_name": inv.product_name,
+                "confidence": round(score, 3),
+                "last_sale_price": float(inv.last_sale_price) if inv.last_sale_price else None,
+                "last_purchase_price": float(inv.last_purchase_price) if inv.last_purchase_price else None,
+                "unit": inv.unit,
+            }
+            for inv, score in exact_matches[:top_k]
+        ]
+        top_confidence = matches[0]["confidence"] if matches else 0.0
+        return {
+            "top_match_confidence": top_confidence,
+            "matches": matches,
+            "needs_clarification": False,
+            "product_not_found": False,
+        }
+
     scored = sorted(
-        [(i, _item_score(product_name, i)) for i in all_inv],
+        [(i, min(_item_score(product_name, i), 0.79)) for i in all_inv],
         key=lambda x: x[1],
         reverse=True,
     )
-
     matches = [
         {
             "product_name": inv.product_name,
@@ -399,7 +499,8 @@ async def adjust_stock(
 
     result = await db.execute(select(Inventory).where(Inventory.user_id == user_id))
     all_items = result.scalars().all()
-    existing = next((i for i in all_items if _fuzzy_match(norm_name, i.product_name)), None)
+    exact_matches = _identity_matches(norm_name, all_items)
+    existing = exact_matches[0][0] if exact_matches else None
 
     if existing:
         existing.quantity = max(existing.quantity + quantity_delta, ZERO)
@@ -434,9 +535,13 @@ async def upsert_inventory(
     payload: InventoryUpsertRequest,
 ) -> InventoryItemResponse:
     norm_name = _norm(payload.product_name)
-    result = await db.execute(select(Inventory).where(Inventory.user_id == user_id))
-    all_items = result.scalars().all()
-    existing = next((i for i in all_items if _fuzzy_match(norm_name, i.product_name)), None)
+    result = await db.execute(
+        select(Inventory).where(
+            Inventory.user_id == user_id,
+            Inventory.product_name == norm_name,
+        )
+    )
+    existing = result.scalar_one_or_none()
 
     if existing:
         existing.quantity = Decimal(str(payload.quantity))
