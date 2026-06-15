@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     r2_bucket_name: str = ""
     r2_public_url: str = ""
 
+    # Firebase Cloud Messaging
+    firebase_project_id: str = ""
+    firebase_client_email: str = ""
+    firebase_private_key: str = ""
+    firebase_credentials_json: str = ""
+
     model_config = {"env_file": ".env", "case_sensitive": False, "extra": "ignore"}
 
 

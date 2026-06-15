@@ -109,3 +109,45 @@ class ProfileSetupResponse(BaseModel):
     business_name: str | None = None
     location: str | None = None
     shop_type: str | None = None
+
+
+_VALID_PUSH_PLATFORMS = ("android", "ios", "web")
+
+
+class PushTokenRegisterRequest(BaseModel):
+    token: str
+    platform: str | None = None
+    device_id: str | None = None
+    app_version: str | None = None
+
+    @field_validator("token")
+    @classmethod
+    def validate_token(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 32:
+            raise ValueError("token looks too short to be a valid FCM token")
+        return v
+
+    @field_validator("platform")
+    @classmethod
+    def validate_platform(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        v = v.strip().lower()
+        if v not in _VALID_PUSH_PLATFORMS:
+            raise ValueError(f"platform must be one of: {', '.join(_VALID_PUSH_PLATFORMS)}")
+        return v
+
+    @field_validator("device_id", "app_version")
+    @classmethod
+    def strip_optional_strings(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        value = v.strip()
+        return value or None
+
+
+class PushTokenRegisterResponse(BaseModel):
+    message: str
+    token_id: int
+    is_active: bool

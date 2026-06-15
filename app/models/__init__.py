@@ -3,6 +3,7 @@ from app.models.user import User
 from app.models.business import Business
 from app.models.otp_code import OTPCode
 from app.models.customer import Customer
+from app.models.device_token import DeviceToken
 from app.models.transaction import Transaction
 from app.models.message_log import MessageLog
 from app.models.reminder_log import ReminderLog
@@ -14,6 +15,7 @@ __all__ = [
     "Business",
     "OTPCode",
     "Customer",
+    "DeviceToken",
     "Transaction",
     "MessageLog",
     "ReminderLog",

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+from dataclasses import dataclass
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.business import Business
 from app.models.message_log import MessageLog
+from app.models.transaction import Transaction as TransactionModel
 from app.schemas.chat import (
     AddToInventoryRequest,
     ChatResponse,
@@ -30,11 +32,20 @@ from app.schemas.chat import (
 from app.services import ai_service, customer_service, inventory_service, transaction_service
 from app.services.ai_tools import _normalize_product_name
 from app.services.muril_service import muril_service
+from app.services.push_notification_service import push_notification_service
 
 _logger = logging.getLogger(__name__)
 
 _VALID_TYPES = {"sale", "payment", "purchase", "expense", "query"}
 _HISTORY_LIMIT = 12
+
+
+@dataclass(slots=True)
+class TransactionPushEvent:
+    transaction: TransactionModel
+    tx_type: str
+    customer_name: str
+    amount: Decimal
 
 # ── Inventory action builder ──────────────────────────────────────────────────
 
@@ -112,6 +123,61 @@ def _build_items(raw_items: list) -> list[ResponseItem]:
         )
         for item in raw_items
     ]
+
+
+def _build_push_payload(
+    tx_type: str,
+    customer_name: str,
+    amount: Decimal,
+) -> tuple[str, str]:
+    if tx_type == "sale":
+        return "Sale completed", f"{customer_name}: Rs{amount:,.0f} transaction recorded."
+    if tx_type == "payment":
+        return "Payment received", f"{customer_name}: Rs{amount:,.0f} payment recorded."
+    return "Transaction completed", f"{customer_name}: Rs{amount:,.0f} transaction recorded."
+
+
+async def _send_transaction_push(
+    db: AsyncSession,
+    user_id: int,
+    *,
+    transaction_id: int,
+    tx_type: str,
+    customer_name: str,
+    amount: Decimal,
+) -> None:
+    title, body = _build_push_payload(tx_type, customer_name, amount)
+    try:
+        await push_notification_service.send_to_user(
+            db,
+            user_id,
+            title=title,
+            body=body,
+            data={
+                "transaction_id": str(transaction_id),
+                "transaction_type": tx_type,
+                "customer_name": customer_name,
+                "amount": str(amount),
+            },
+        )
+    except Exception as exc:  # pragma: no cover - do not break transaction flow
+        _logger.warning("Failed to send transaction push notification: %s", exc)
+
+
+async def _send_push_events(
+    db: AsyncSession,
+    user_id: int,
+    events: list[TransactionPushEvent],
+) -> None:
+    for event in events:
+        await _send_transaction_push(
+            db,
+            user_id,
+            transaction_id=event.transaction.id,
+            tx_type=event.tx_type,
+            customer_name=event.customer_name,
+            amount=event.amount,
+        )
 
 
 def _format_muril_analysis(analysis: dict) -> MurilAnalysisResponse | None:
@@ -438,27 +504,27 @@ async def _process_tx(
     db: AsyncSession,
     user_id: int,
     tx: dict,
-) -> tuple[str | None, TransactionDetail | None, ChatResponse | None]:
+) -> tuple[str | None, TransactionDetail | None, ChatResponse | None, TransactionPushEvent | None]:
     """
     Process a single parsed transaction dict.
 
-    Returns (reply, detail, clarification_response):
-    - Customer clarification needed : (None, None, ChatResponse)
-    - Processed ok                  : (reply_str, TransactionDetail, None)
-    - Error                         : (error_msg, TransactionDetail(error), None)
+    Returns (reply, detail, clarification_response, push_event):
+    - Customer clarification needed : (None, None, ChatResponse, None)
+    - Processed ok                  : (reply_str, TransactionDetail, None, push_event?)
+    - Error                         : (error_msg, TransactionDetail(error), None, None)
     """
     tx_type = tx.get("type", "").lower()
 
     if tx_type not in _VALID_TYPES:
         msg = "Thoda clear likhiye"
-        return msg, TransactionDetail(type=tx_type or "unknown", status="error", message=msg), None
+        return msg, TransactionDetail(type=tx_type or "unknown", status="error", message=msg), None, None
 
     # ── Query ─────────────────────────────────────────────────────────────────
     if tx_type == "query":
         customer_name = tx.get("customer_name")
         if not customer_name:
             msg = "Kis customer ka hisaab chahiye? Naam likhiye"
-            return msg, TransactionDetail(type="query", status="error", message=msg), None
+            return msg, TransactionDetail(type="query", status="error", message=msg), None, None
 
         customer = await customer_service.get_or_create(db, user_id, customer_name)
         msg = f"👤 {customer.name} ka baaki: ₹{customer.pending:,.0f}"
@@ -468,7 +534,7 @@ async def _process_tx(
             customer_name=customer.name,
             customer_total_pending=float(customer.pending),
             message=msg,
-        ), None
+        ), None, None
 
     # ── Amount ────────────────────────────────────────────────────────────────
     try:
@@ -477,7 +543,7 @@ async def _process_tx(
             raise ValueError
     except (ValueError, Exception):
         msg = "Amount sahi likhiye"
-        return msg, TransactionDetail(type=tx_type, status="error", message=msg), None
+        return msg, TransactionDetail(type=tx_type, status="error", message=msg), None, None
 
     raw_items: list = tx.get("items", [])
     note: str | None = tx.get("note")
@@ -488,30 +554,40 @@ async def _process_tx(
 
     # ── Purchase ──────────────────────────────────────────────────────────────
     if tx_type == "purchase":
-        await transaction_service.record_purchase(db, user_id, amount, raw_items, note)
+        recorded_tx = await transaction_service.record_purchase(db, user_id, amount, raw_items, note)
         msg = f"🛒 Purchase recorded: ₹{amount:,.0f}"
         return msg, TransactionDetail(
             type="purchase", status="recorded",
             total_amount=float(amount), amount_paid=float(amount),
             is_credit=False, items=response_items, note=note, message=msg,
-        ), None
+        ), None, TransactionPushEvent(
+            transaction=recorded_tx,
+            tx_type="purchase",
+            customer_name="Purchase",
+            amount=amount,
+        )
 
     # ── Expense ───────────────────────────────────────────────────────────────
     if tx_type == "expense":
-        await transaction_service.record_expense(db, user_id, amount, note)
+        recorded_tx = await transaction_service.record_expense(db, user_id, amount, note)
         msg = f"💸 Expense added: ₹{amount:,.0f}"
         return msg, TransactionDetail(
             type="expense", status="recorded",
             total_amount=float(amount), amount_paid=float(amount),
             is_credit=False, items=[], note=note, message=msg,
-        ), None
+        ), None, TransactionPushEvent(
+            transaction=recorded_tx,
+            tx_type="expense",
+            customer_name="Expense",
+            amount=amount,
+        )
 
     # ── Sale — product name mandatory ─────────────────────────────────────────
     if tx_type == "sale":
         has_product = any(item.get("name", "").strip() for item in raw_items)
         if not has_product:
             q = "Kaunsa product add karna hai?"
-            return None, None, ChatResponse(reply=q, clarification_needed=q)
+            return None, None, ChatResponse(reply=q, clarification_needed=q), None
 
         # Early not-found check: the AI already marked items as price_source: "not_found".
         # Show Add/Skip buttons immediately — before the complete-sale gate — so the user
@@ -532,7 +608,7 @@ async def _process_tx(
                 reply=msg,
                 inventory_action_needed=action_products,
                 pending_transaction=pending_tx_with_status,
-            )
+            ), None
 
         # ── Complete sale → Step 3 inventory check + Step 4 confirmation ──────
         if _is_complete_sale(tx):
@@ -553,7 +629,7 @@ async def _process_tx(
                     reply=msg,
                     inventory_action_needed=action_products,
                     pending_transaction=pending_tx_with_status,
-                )
+                ), None
 
             # Bug 4: found items with NULL/zero price in DB → block, ask user to update
             no_price_names: list[str] = []
@@ -569,7 +645,7 @@ async def _process_tx(
                     for name in no_price_names
                 ]
                 msg = "\n".join(lines)
-                return None, None, ChatResponse(reply=msg, clarification_needed=msg)
+                return None, None, ChatResponse(reply=msg, clarification_needed=msg), None
 
             # Bug 4: rebuild all items with DB-confirmed names and prices
             rebuilt_tx = _apply_db_prices(tx, item_statuses)
@@ -581,19 +657,19 @@ async def _process_tx(
                 reply=summary,
                 transaction_draft=draft,
                 pending_transaction=rebuilt_tx,
-            )
+            ), None
 
         # Guard: items collected but amount_paid still unknown → ask before
         # proceeding to customer lookup, which would trigger a premature flow.
         if tx.get("amount_paid") is None:
             q = "Kitna paisa diya? Amount batao 💰"
-            return None, None, ChatResponse(reply=q, clarification_needed=q)
+            return None, None, ChatResponse(reply=q, clarification_needed=q), None
 
     # ── Sale / Payment — need customer ────────────────────────────────────────
     customer_name: str | None = tx.get("customer_name")
     if not customer_name:
         msg = "Customer ka naam likhiye"
-        return msg, TransactionDetail(type=tx_type, status="error", message=msg), None
+        return msg, TransactionDetail(type=tx_type, status="error", message=msg), None, None
 
     # MuRIL-enhanced search returns (Customer, score) tuples
     candidates_with_scores = await customer_service.search_by_name_with_muril(
@@ -610,7 +686,7 @@ async def _process_tx(
             ),
             customer_candidates=[],
             pending_transaction=tx,
-        )
+        ), None
 
     # Multiple matches (or single) — always show selection; never auto-confirm
     reply_text = (
@@ -622,7 +698,7 @@ async def _process_tx(
         reply=reply_text,
         customer_candidates=_candidate_list(candidates_with_scores),
         pending_transaction=tx,
-    )
+    ), None
 
 
 # ── Bug 3: Inline inventory actions ──────────────────────────────────────────
@@ -1021,9 +1097,10 @@ async def handle_message(
     # ── Step 4: process each transaction ─────────────────────────────────────
     replies: list[str] = []
     tx_details: list[TransactionDetail] = []
+    push_events: list[TransactionPushEvent] = []
 
     for tx in transactions:
-        reply_str, detail, clarification_resp = await _process_tx(db, user_id, tx)
+        reply_str, detail, clarification_resp, push_event = await _process_tx(db, user_id, tx)
 
         if clarification_resp is not None:
             log_response = parsed
@@ -1039,6 +1116,13 @@ async def handle_message(
             replies.append(reply_str)
         if detail:
             tx_details.append(detail)
+        if push_event:
+            push_events.append(push_event)
+
+    if push_events:
+        await db.flush()
+        await db.commit()
+        await _send_push_events(db, user_id, push_events)
 
     reply = "\n\n".join(replies) if replies else "Samajh nahi aaya, thoda clear likhiye"
     # Bug 1: final scrub on any reply assembled from AI-generated fields
@@ -1095,13 +1179,23 @@ async def confirm_customer(
     response_items = _build_items(raw_items)
 
     if tx_type == "sale":
-        await transaction_service.record_sale(
+        recorded_tx = await transaction_service.record_sale(
             db, user_id, customer, amount, pending_amount, is_credit, raw_items, note
         )
         msg = _sale_reply(customer.name, amount, pending_amount, is_credit)
         confirmed_log = {"transactions": [], "confidence": "high", "clarification_needed": None}
         phone_part = f" ({customer.phone})" if customer.phone else ""
         await _log(db, user_id, f"[Confirmed: {customer.name}{phone_part}]", confirmed_log, msg)
+        await db.flush()
+        await db.commit()
+        await _send_transaction_push(
+            db,
+            user_id,
+            transaction_id=recorded_tx.id,
+            tx_type="sale",
+            customer_name=customer.name,
+            amount=amount,
+        )
         return ChatResponse(
             reply=msg,
             transactions=[TransactionDetail(
@@ -1119,7 +1213,7 @@ async def confirm_customer(
         )
 
     if tx_type == "payment":
-        await transaction_service.record_payment(db, user_id, customer, amount, note)
+        recorded_tx = await transaction_service.record_payment(db, user_id, customer, amount, note)
         msg = (
             f"✅ Payment received\n💰 ₹{amount:,.0f}\n👤 {customer.name}"
             f"\n⏳ Remaining: ₹{customer.pending:,.0f}"
@@ -1127,6 +1221,16 @@ async def confirm_customer(
         confirmed_log = {"transactions": [], "confidence": "high", "clarification_needed": None}
         phone_part = f" ({customer.phone})" if customer.phone else ""
         await _log(db, user_id, f"[Confirmed: {customer.name}{phone_part}]", confirmed_log, msg)
+        await db.flush()
+        await db.commit()
+        await _send_transaction_push(
+            db,
+            user_id,
+            transaction_id=recorded_tx.id,
+            tx_type="payment",
+            customer_name=customer.name,
+            amount=amount,
+        )
         return ChatResponse(
             reply=msg,
             transactions=[TransactionDetail(

@@ -22,6 +22,9 @@ class User(Base, TimestampMixin):
     business: Mapped["Business"] = relationship(
         "Business", back_populates="owner", uselist=False
     )
+    device_tokens: Mapped[list["DeviceToken"]] = relationship(
+        "DeviceToken", back_populates="user"
+    )
 
     def __repr__(self) -> str:
         return f"<User id={self.id} email={self.email} phone={self.phone_number}>"

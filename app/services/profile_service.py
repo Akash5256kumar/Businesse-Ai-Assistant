@@ -7,8 +7,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.business import Business
+from app.models.device_token import DeviceToken
 from app.models.user import User
-from app.schemas.auth import ProfileSetupRequest, ProfileSetupResponse
+from app.schemas.auth import (
+    ProfileSetupRequest,
+    ProfileSetupResponse,
+    PushTokenRegisterRequest,
+    PushTokenRegisterResponse,
+)
 
 
 def _slugify(text: str) -> str:
@@ -101,4 +107,44 @@ async def setup_profile(
         business_name=business.name,
         location=business.location,
         shop_type=business.shop_type,
+    )
+
+
+async def register_push_token(
+    db: AsyncSession,
+    user: User,
+    payload: PushTokenRegisterRequest,
+) -> PushTokenRegisterResponse:
+    existing = await db.scalar(
+        select(DeviceToken).where(DeviceToken.token == payload.token)
+    )
+
+    if existing is None:
+        device_token = DeviceToken(
+            user_id=user.id,
+            token=payload.token,
+            platform=payload.platform,
+            device_id=payload.device_id,
+            app_version=payload.app_version,
+            is_active=True,
+        )
+        db.add(device_token)
+        await db.flush()
+        return PushTokenRegisterResponse(
+            message="Push token registered successfully.",
+            token_id=device_token.id,
+            is_active=device_token.is_active,
+        )
+
+    existing.user_id = user.id
+    existing.platform = payload.platform
+    existing.device_id = payload.device_id
+    existing.app_version = payload.app_version
+    existing.is_active = True
+    await db.flush()
+
+    return PushTokenRegisterResponse(
+        message="Push token updated successfully.",
+        token_id=existing.id,
+        is_active=existing.is_active,
     )
