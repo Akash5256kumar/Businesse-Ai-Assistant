@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import csv
+import io
 import re
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 
 from sqlalchemy import select
@@ -10,7 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.customer import Customer
 from app.models.inventory import Inventory
 from app.models.transaction import Transaction
-from app.schemas.inventory import InventoryItemResponse, InventoryListResponse, InventoryUpsertRequest
+from app.schemas.inventory import (
+    ImportRowResult,
+    ImportSummaryResponse,
+    InventoryItemResponse,
+    InventoryListResponse,
+    InventoryUpsertRequest,
+)
 
 ZERO = Decimal("0")
 
@@ -579,3 +587,148 @@ async def delete_inventory_item(db: AsyncSession, user_id: int, item_id: int) ->
         return False
     await db.delete(item)
     return True
+
+
+# ── Excel / CSV bulk import ───────────────────────────────────────────────────
+
+_COLUMN_ALIASES: dict[str, str] = {
+    # product_name
+    "product": "product_name",
+    "item": "product_name",
+    "item name": "product_name",
+    "name": "product_name",
+    "product name": "product_name",
+    # quantity
+    "qty": "quantity",
+    "stock": "quantity",
+    "stock qty": "quantity",
+    # unit
+    "uom": "unit",
+    "unit of measure": "unit",
+    # last_purchase_price
+    "purchase price": "last_purchase_price",
+    "buy price": "last_purchase_price",
+    "cost": "last_purchase_price",
+    "cost price": "last_purchase_price",
+    "purchase_price": "last_purchase_price",
+    # last_sale_price
+    "sale price": "last_sale_price",
+    "sell price": "last_sale_price",
+    "selling price": "last_sale_price",
+    "mrp": "last_sale_price",
+    "price": "last_sale_price",
+    "sale_price": "last_sale_price",
+    # category
+    "cat": "category",
+    "type": "category",
+}
+
+
+def _canonical_col(raw: str) -> str:
+    key = raw.strip().lower()
+    return _COLUMN_ALIASES.get(key, key.replace(" ", "_"))
+
+
+def _safe_decimal(value: str | None) -> Decimal | None:
+    if value is None or str(value).strip() in ("", "-", "N/A", "n/a", "NA"):
+        return None
+    try:
+        return Decimal(str(value).strip().replace(",", ""))
+    except InvalidOperation:
+        return None
+
+
+def _parse_rows_from_csv(content: bytes) -> list[dict]:
+    text = content.decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(text))
+    raw_headers = reader.fieldnames or []
+    canon = {h: _canonical_col(h) for h in raw_headers}
+    rows: list[dict] = []
+    for row in reader:
+        rows.append({canon[k]: v for k, v in row.items()})
+    return rows
+
+
+def _parse_rows_from_xlsx(content: bytes) -> list[dict]:
+    import openpyxl  # imported here so it's only loaded when needed
+    wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    ws = wb.active
+    all_rows = list(ws.iter_rows(values_only=True))
+    if not all_rows:
+        return []
+    raw_headers = [str(h) if h is not None else "" for h in all_rows[0]]
+    canon = [_canonical_col(h) for h in raw_headers]
+    rows: list[dict] = []
+    for data_row in all_rows[1:]:
+        if all(cell is None or str(cell).strip() == "" for cell in data_row):
+            continue
+        rows.append({canon[i]: (str(data_row[i]) if data_row[i] is not None else "") for i in range(len(canon))})
+    wb.close()
+    return rows
+
+
+async def import_inventory_from_file(
+    db: AsyncSession,
+    user_id: int,
+    content: bytes,
+    filename: str,
+) -> ImportSummaryResponse:
+    rows = _parse_rows_from_xlsx(content) if filename.endswith(".xlsx") else _parse_rows_from_csv(content)
+
+    # Pre-load all existing inventory for fast duplicate check
+    existing_result = await db.execute(select(Inventory).where(Inventory.user_id == user_id))
+    existing_items = {i.product_name: i for i in existing_result.scalars().all()}
+
+    results: list[ImportRowResult] = []
+    imported = updated = skipped = 0
+
+    for idx, row in enumerate(rows, start=2):  # row 1 is header
+        raw_name = row.get("product_name", "").strip()
+        if not raw_name:
+            skipped += 1
+            results.append(ImportRowResult(row=idx, product_name="(empty)", status="skipped", reason="product_name is empty"))
+            continue
+
+        norm_name = _norm(raw_name)
+        qty = _safe_decimal(row.get("quantity", "0") or "0") or Decimal("0")
+        unit = _norm_unit(row.get("unit", "piece") or "piece")
+        category_raw = row.get("category", "")
+        category = category_raw.strip().lower() if category_raw and category_raw.strip() else None
+        purchase_price = _safe_decimal(row.get("last_purchase_price"))
+        sale_price = _safe_decimal(row.get("last_sale_price"))
+
+        if norm_name in existing_items:
+            item = existing_items[norm_name]
+            item.quantity = qty
+            item.unit = unit
+            if category is not None:
+                item.category = category
+            if purchase_price is not None:
+                item.last_purchase_price = purchase_price
+            if sale_price is not None:
+                item.last_sale_price = sale_price
+            updated += 1
+            results.append(ImportRowResult(row=idx, product_name=raw_name, status="updated"))
+        else:
+            new_item = Inventory(
+                user_id=user_id,
+                product_name=norm_name,
+                quantity=qty,
+                unit=unit,
+                category=category,
+                last_purchase_price=purchase_price,
+                last_sale_price=sale_price,
+            )
+            db.add(new_item)
+            existing_items[norm_name] = new_item
+            imported += 1
+            results.append(ImportRowResult(row=idx, product_name=raw_name, status="imported"))
+
+    await db.flush()
+    return ImportSummaryResponse(
+        total_rows=len(rows),
+        imported=imported,
+        updated=updated,
+        skipped=skipped,
+        rows=results,
+    )

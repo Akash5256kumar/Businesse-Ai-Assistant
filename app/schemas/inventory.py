@@ -54,3 +54,18 @@ class InventoryAdjustRequest(BaseModel):
     delta: float        # positive = add stock, negative = reduce stock
     unit: str = "piece"
     price: float | None = None
+
+
+class ImportRowResult(BaseModel):
+    row: int
+    product_name: str
+    status: str          # "imported" | "updated" | "skipped"
+    reason: str | None = None
+
+
+class ImportSummaryResponse(BaseModel):
+    total_rows: int
+    imported: int
+    updated: int
+    skipped: int
+    rows: list[ImportRowResult] = []
