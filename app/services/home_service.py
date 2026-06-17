@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.customer import Customer
+from app.models.notification_log import NotificationLog
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.schemas.home import (
@@ -39,11 +40,18 @@ async def get_home_data(db: AsyncSession, user_id: int) -> HomeResponse:
             location=user.business.location,
         )
 
+    unread_notifications = await db.scalar(
+        select(func.count()).where(
+            NotificationLog.user_id == user_id,
+            NotificationLog.is_read.is_(False),
+        )
+    ) or 0
+
     user_header = UserHeader(
         full_name=user.full_name,
         user_type=user.user_type,
         business=business_info,
-        unread_notifications=0,
+        unread_notifications=unread_notifications,
     )
 
     # ── Customer users: return profile-only response ─────────────────────────

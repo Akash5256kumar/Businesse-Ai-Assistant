@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.device_token import DeviceToken
+from app.models.notification_log import NotificationLog
 
 try:
     from google.auth.transport.requests import Request
@@ -53,6 +54,12 @@ class PushNotificationService:
         if not self.is_configured():
             _logger.info("Skipping push notification because Firebase is not configured")
             return 0
+
+        # Always log the notification so it appears in the inbox regardless of
+        # whether the user has an active device token.
+        log = NotificationLog(user_id=user_id, title=title, body=body, data=data or {})
+        db.add(log)
+        await db.flush()
 
         result = await db.execute(
             select(DeviceToken).where(
