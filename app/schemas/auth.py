@@ -17,9 +17,8 @@ class SendOTPResponse(BaseModel):
 
 
 class VerifyOTPRequest(BaseModel):
-    email: str | None = None
     phone_number: str | None = None
-    otp: str
+    firebase_id_token: str
     purpose: str = "login"
 
 

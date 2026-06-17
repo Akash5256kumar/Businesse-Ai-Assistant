@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
-from sqlalchemy import Select, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -15,6 +15,7 @@ from app.schemas.auth import (
     VerifyOTPRequest,
     VerifyOTPResponse,
 )
+from app.services.firebase_service import verify_firebase_id_token
 from app.services.jwt_service import create_access_token
 from app.services.otp_service import (
     generate_otp,
@@ -36,20 +37,6 @@ def _resolve_destination(email: str | None, phone_number: str | None) -> tuple[s
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         detail="A destination is required to send OTP.",
-    )
-
-
-def _active_otp_query(channel: str, destination: str, purpose: str) -> Select[tuple[OTPCode]]:
-    now = datetime.now(UTC)
-    return (
-        select(OTPCode)
-        .where(OTPCode.channel == channel)
-        .where(OTPCode.destination == destination)
-        .where(OTPCode.purpose == purpose)
-        .where(OTPCode.consumed_at.is_(None))
-        .where(OTPCode.verified_at.is_(None))
-        .where(OTPCode.expires_at > now)
-        .order_by(OTPCode.created_at.desc())
     )
 
 
@@ -77,6 +64,11 @@ async def _get_or_create_user(
     await db.flush()
     return user, True
 
+
+# ---------------------------------------------------------------------------
+# send_otp — kept for API compatibility; OTP delivery now handled by Firebase
+# on the client side. This endpoint is no longer called by the mobile app.
+# ---------------------------------------------------------------------------
 
 async def send_otp(db: AsyncSession, payload: SendOTPRequest) -> SendOTPResponse:
     channel, destination = _resolve_destination(payload.email, payload.phone_number)
@@ -110,45 +102,43 @@ async def send_otp(db: AsyncSession, payload: SendOTPRequest) -> SendOTPResponse
     )
 
 
+# ---------------------------------------------------------------------------
+# verify_otp — Firebase-based: validates the ID token issued by the client
+# after Firebase SMS OTP verification, then issues our own JWT.
+# ---------------------------------------------------------------------------
+
 async def verify_otp(db: AsyncSession, payload: VerifyOTPRequest) -> VerifyOTPResponse:
-    channel, destination = _resolve_destination(payload.email, payload.phone_number)
-    otp_record = await db.scalar(_active_otp_query(channel, destination, payload.purpose))
+    # 1. Verify the Firebase ID token; raises HTTP 401 on failure.
+    claims = await verify_firebase_id_token(
+        payload.firebase_id_token,
+        settings.firebase_project_id,
+    )
 
-    if otp_record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No active OTP found for this destination.",
-        )
-
-    provided_hash = hash_otp(destination, payload.otp)
-    now = datetime.now(UTC)
-
-    if otp_record.code_hash != provided_hash:
-        otp_record.attempts += 1
-        if otp_record.attempts >= settings.otp_max_attempts:
-            otp_record.consumed_at = now
-        await db.commit()
+    # 2. Extract phone number from the token (authoritative — ignore client field).
+    firebase_phone: str | None = claims.get("phone_number")
+    if not firebase_phone:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid OTP.",
+            detail="Firebase token does not contain a verified phone number.",
         )
 
-    user, is_new_user = await _get_or_create_user(db, channel, destination)
+    # 3. Normalise and look up / create the user record.
+    phone_number = normalize_phone_number(firebase_phone)
+    user, is_new_user = await _get_or_create_user(db, "phone", phone_number)
+    await db.commit()
+
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive.",
         )
 
-    otp_record.verified_at = now
-    otp_record.consumed_at = now
-    await db.commit()
-
+    # 4. Issue our own JWT — same payload shape as before.
     access_token = create_access_token(
         {
             "sub": str(user.id),
             "user_id": user.id,
-            "channel": channel,
+            "channel": "phone",
         }
     )
 
