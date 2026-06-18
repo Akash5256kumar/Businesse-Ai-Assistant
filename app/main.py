@@ -12,6 +12,7 @@ from app.api.v1.customers import router as customers_router
 from app.api.v1.home import router as home_router
 from app.api.v1.inventory import router as inventory_router
 from app.api.v1.notifications import router as notifications_router
+from app.api.v1.pages import router as pages_router
 from app.api.v1.profile import router as profile_router
 from app.api.v1.reminders import router as reminders_router
 
@@ -47,6 +48,7 @@ app.include_router(customers_router)
 app.include_router(home_router)
 app.include_router(inventory_router)
 app.include_router(notifications_router)
+app.include_router(pages_router)
 app.include_router(profile_router)
 app.include_router(reminders_router)
 
