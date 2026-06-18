@@ -29,6 +29,9 @@ class VerifyOTPResponse(BaseModel):
     token_type: str
     user_id: int
     is_new_user: bool
+    has_business: bool = False
+    business_id: int | None = None
+    business_name: str | None = None
 
 
 class TokenResponse(BaseModel):

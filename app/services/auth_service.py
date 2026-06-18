@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from fastapi import HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.models.otp_code import OTPCode
@@ -133,7 +134,16 @@ async def verify_otp(db: AsyncSession, payload: VerifyOTPRequest) -> VerifyOTPRe
             detail="User account is inactive.",
         )
 
-    # 4. Issue our own JWT — same payload shape as before.
+    # 4. Reload user with business relationship to check profile completeness.
+    user_with_business = await db.scalar(
+        select(User)
+        .where(User.id == user.id)
+        .options(selectinload(User.business))
+    )
+    business = getattr(user_with_business, "business", None) if user_with_business else None
+    has_business = business is not None
+
+    # 5. Issue our own JWT.
     access_token = create_access_token(
         {
             "sub": str(user.id),
@@ -149,4 +159,7 @@ async def verify_otp(db: AsyncSession, payload: VerifyOTPRequest) -> VerifyOTPRe
         token_type="bearer",
         user_id=user.id,
         is_new_user=is_new_user,
+        has_business=has_business,
+        business_id=business.id if business else None,
+        business_name=business.name if business else None,
     )
